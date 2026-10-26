@@ -35,6 +35,7 @@ type AssetKind = 'pdf' | 'mp3' | 'midi'
 type StoredAssetInfo = { url: string; fileName: string; mimeType?: string; sizeBytes?: number; uploadedAt?: number }
 type ScoreAssetsMap = Record<string, Partial<Record<AssetKind, StoredAssetInfo>>>
 type TypeFilter = 'all' | ScoreType
+type SortBy = 'title-asc' | 'artist-asc' | 'updated-desc' | 'updated-asc' | 'favorites-first'
 
 const STORAGE_KEY = 'scoreroom.library.v1' // Legacy key used only for one-time cloud migration
 const SCORE_FILE_DB = 'scoreroom.score-files.v1' // Legacy IndexedDB used only for one-time cloud migration
@@ -355,6 +356,7 @@ export default function ScoreLibrary() {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [favoritesOnly, setFavoritesOnly] = useState(true)
+  const [sortBy, setSortBy] = useState<SortBy>('title-asc')
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<ScoreDraft>(EMPTY_DRAFT)
@@ -503,6 +505,16 @@ export default function ScoreLibrary() {
 
   const visibleScores = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
+    const compareTitle = (a: ScoreRecord, b: ScoreRecord) =>
+      a.title.localeCompare(b.title, 'zh-TW', { numeric: true, sensitivity: 'base' }) ||
+      (a.artist ?? '').localeCompare(b.artist ?? '', 'zh-TW', { numeric: true, sensitivity: 'base' })
+    const compareArtist = (a: ScoreRecord, b: ScoreRecord) => {
+      const artistA = (a.artist ?? '').trim()
+      const artistB = (b.artist ?? '').trim()
+      if (!artistA && artistB) return 1
+      if (artistA && !artistB) return -1
+      return artistA.localeCompare(artistB, 'zh-TW', { numeric: true, sensitivity: 'base' }) || compareTitle(a, b)
+    }
     return scores
       .filter((score) => typeFilter === 'all' || score.type === typeFilter)
       .filter((score) => !favoritesOnly || score.favorite)
@@ -511,8 +523,14 @@ export default function ScoreLibrary() {
         return [score.title, score.artist ?? '', score.category, score.fileUrl, score.pdfSourceFileName ?? '', score.mp3SourceFileName ?? '', score.midiSourceFileName ?? '', score.keySignature ?? '', score.timeSignature ?? '', score.tempoBpm ?? '', score.measureCount ?? '']
           .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
       })
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.title.localeCompare(b.title, 'zh-TW'))
-  }, [scores, query, typeFilter, favoritesOnly])
+      .sort((a, b) => {
+        if (sortBy === 'artist-asc') return compareArtist(a, b)
+        if (sortBy === 'updated-desc') return (b.updatedAt || 0) - (a.updatedAt || 0) || compareTitle(a, b)
+        if (sortBy === 'updated-asc') return (a.updatedAt || 0) - (b.updatedAt || 0) || compareTitle(a, b)
+        if (sortBy === 'favorites-first') return Number(b.favorite) - Number(a.favorite) || compareTitle(a, b)
+        return compareTitle(a, b)
+      })
+  }, [scores, query, typeFilter, favoritesOnly, sortBy])
 
   function openScoreInNewTab(score: ScoreRecord) {
     // The library remains a catalogue only. A separate app URL mounts the full reader.
@@ -1139,19 +1157,23 @@ export default function ScoreLibrary() {
         .score-library-button-primary { background:linear-gradient(135deg, #d9bd87, #b38d4e); color:#161a20; border-color:#d9bd87; box-shadow:0 5px 20px rgba(175,134,69,.18); }
         .score-library-button-primary:hover { color:#10151c; background:linear-gradient(135deg, #e8d2a6, #c5a163); border-color:#e8d2a6; box-shadow:0 7px 24px rgba(175,134,69,.25); }
         .score-library-layout { display:grid; grid-template-columns:minmax(0,1fr); gap:20px; align-items:start; }
-        .score-library-panel { background:linear-gradient(155deg, rgba(22,32,44,.98), rgba(15,23,33,.98)); border:1px solid var(--sl-line); border-radius:16px; overflow:hidden; box-shadow:0 16px 42px rgba(0,0,0,.15); }
-        .score-library-controls { padding:15px; border-bottom:1px solid var(--sl-line); display:grid; gap:12px; background:rgba(255,255,255,.012); }
+        .score-library-panel { background:transparent; border:0; border-radius:0; overflow:visible; box-shadow:none; min-width:0; }
+        .score-library-controls { padding:0 0 15px; border-bottom:0; display:grid; gap:12px; background:transparent; margin-bottom:16px; }
         .score-library-input,.score-library-select { width:100%; box-sizing:border-box; border:1px solid var(--sl-line-strong); border-radius:10px; padding:11px 12px; color:#edf2f8; background:#0d141d; font:inherit; font-size:12px; outline:none; transition:border-color .16s ease, box-shadow .16s ease, background .16s ease; }
         .score-library-input::placeholder { color:#66778a; }
         .score-library-input:focus,.score-library-select:focus { border-color:rgba(217,183,121,.72); box-shadow:0 0 0 3px rgba(217,183,121,.10); background:#101923; }
         .score-library-select option { background:#111923; color:#edf2f8; }
-        .score-library-filters { display:flex; gap:7px; flex-wrap:wrap; }
+        .score-library-filters { display:flex; gap:7px; flex-wrap:wrap; flex:1; min-width:0; }
+        .score-library-filter-sort-row { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+        .score-library-sort { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+        .score-library-sort label { color:var(--sl-muted); font-size:11px; white-space:nowrap; }
+        .score-library-sort .score-library-select { width:auto; min-width:145px; padding:8px 10px; }
         .score-library-chip { border:1px solid var(--sl-line); padding:7px 10px; border-radius:999px; background:rgba(255,255,255,.025); font:inherit; font-size:11px; font-weight:600; cursor:pointer; color:#a9b6c6; transition:all .16s ease; }
         .score-library-chip:hover { border-color:rgba(217,183,121,.42); color:#f0dfbf; background:rgba(217,183,121,.055); }
         .score-library-chip.active { background:rgba(217,183,121,.13); border-color:rgba(217,183,121,.48); color:#f0d7a5; box-shadow:inset 0 0 0 1px rgba(217,183,121,.045); }
-        .score-library-list { display:flex; flex-direction:column; max-height:calc(100vh - 270px); min-height:170px; overflow:auto; padding:5px 10px 10px; scrollbar-width:thin; scrollbar-color:#354454 transparent; }
-        .score-library-item { position:relative; width:100%; box-sizing:border-box; text-align:left; border:1px solid transparent; border-bottom-color:rgba(186,202,221,.075); background:transparent; padding:12px 10px; display:flex; align-items:center; gap:14px; cursor:pointer; color:inherit; transition:background .16s ease, border-color .16s ease, transform .16s ease; border-radius:12px; }
-        .score-library-item:hover { background:rgba(255,255,255,.035); border-color:rgba(186,202,221,.10); }
+        .score-library-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; max-height:none; min-height:0; overflow:visible; padding:0; }
+        .score-library-item { position:relative; width:100%; min-width:0; box-sizing:border-box; text-align:left; border:1px solid var(--sl-line); background:linear-gradient(155deg, rgba(22,32,44,.72), rgba(15,23,33,.72)); padding:12px; display:flex; align-items:center; gap:12px; cursor:pointer; color:inherit; transition:background .16s ease, border-color .16s ease, transform .16s ease; border-radius:13px; }
+        .score-library-item:hover { background:linear-gradient(155deg, rgba(28,41,56,.92), rgba(18,28,40,.92)); border-color:rgba(217,183,121,.35); transform:translateY(-1px); }
         .score-library-cover { position:relative; display:flex; align-items:center; justify-content:center; width:86px; height:86px; flex:0 0 86px; overflow:hidden; border-radius:11px; border:1px solid rgba(217,183,121,.25); background:linear-gradient(145deg,#283a4e,#172330 62%,#413522); box-shadow:0 5px 16px rgba(0,0,0,.22), inset 0 0 0 1px rgba(255,255,255,.025); }
         .score-library-cover-art { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; overflow:hidden; background:radial-gradient(circle at 76% 15%,rgba(217,183,121,.24),transparent 31%),linear-gradient(150deg,#263a50,#121c28 70%); }
         .score-library-cover-art::before { content:""; position:absolute; width:66px; height:66px; border:1px solid rgba(217,183,121,.2); border-radius:50%; transform:translate(25px,-25px); }
@@ -1229,7 +1251,7 @@ export default function ScoreLibrary() {
         @media (prefers-reduced-motion: reduce) { .score-library-special-notice { animation:none; } }
         .score-library-path-hint { font-size:10px; color:#8493a4; line-height:1.7; }
         .score-library-page button:focus-visible { outline:2px solid var(--sl-gold); outline-offset:3px; }
-        @media (max-width: 800px) { .score-library-page {padding:14px;} .score-library-header {align-items:flex-start;} .score-library-title {font-size:24px;} .score-library-title::before { width:36px; height:36px; flex-basis:36px; } .score-library-layout {grid-template-columns:minmax(0,1fr);} .score-library-list {max-height:calc(100vh - 240px); min-height:170px;} .score-library-reader-head {padding:15px;} }
+        @media (max-width: 800px) { .score-library-page {padding:14px;} .score-library-header {align-items:flex-start;} .score-library-title {font-size:24px;} .score-library-title::before { width:36px; height:36px; flex-basis:36px; } .score-library-layout {grid-template-columns:minmax(0,1fr);} .score-library-list {grid-template-columns:minmax(0,1fr); max-height:none; min-height:0; overflow:visible;} .score-library-filter-sort-row {flex-direction:column; align-items:stretch;} .score-library-sort {justify-content:flex-end;} .score-library-reader-head {padding:15px;} }
         @media (max-width: 480px) { .score-library-header-actions { width:100%; justify-content:flex-start; } .score-library-header-actions .score-library-button { width:100%; } .score-library-file-row { flex-direction:column; } .score-library-field-grid,.score-library-attachment-grid { grid-template-columns:minmax(0,1fr); } .score-library-header {flex-direction:column;} .score-library-header .score-library-button {width:100%;} .score-library-reader-head {flex-direction:column;} .score-library-modal {padding:19px;} .score-library-item {gap:10px; padding:10px 6px;} .score-library-cover {width:66px;height:66px;flex-basis:66px;border-radius:9px;} .score-library-cover-glyph {font-size:30px;} .score-library-open-indicator {font-size:9px;padding:4px 5px;} .score-library-item-meta {margin-top:6px;} .score-library-special-notice { top:10px; right:10px; width:min(360px, calc(100vw - 20px)); padding:13px 13px 14px; } .score-library-notice-manager-modal { max-height:90vh; padding:16px; } .score-library-notice-manager-modal .score-library-field-grid { grid-template-columns:minmax(0,1fr); } .score-library-notice-editor { padding:10px; } }
       `}</style>
 
@@ -1269,37 +1291,55 @@ export default function ScoreLibrary() {
                 placeholder="搜尋曲名、藝術家、調性、分類或檔案路徑…"
                 aria-label="搜尋樂譜"
               />
-              <div className="score-library-filters" aria-label="樂譜類型篩選">
-                <button
-                  type="button"
-                  className={`score-library-chip ${typeFilter === 'all' && !favoritesOnly ? 'active' : ''}`}
-                  aria-pressed={typeFilter === 'all' && !favoritesOnly}
-                  onClick={() => {
-                    setTypeFilter('all')
-                    setFavoritesOnly(false)
-                  }}
-                >全部 {scores.length}</button>
-                <button
-                  type="button"
-                  className={`score-library-chip ${favoritesOnly ? 'active' : ''}`}
-                  aria-pressed={favoritesOnly}
-                  onClick={() => {
-                    setTypeFilter('all')
-                    setFavoritesOnly(true)
-                  }}
-                >★ 收藏</button>
-                {SCORE_TYPES.map((type) => (
+              <div className="score-library-filter-sort-row">
+                <div className="score-library-filters" aria-label="樂譜類型篩選">
                   <button
-                    key={type.value}
                     type="button"
-                    className={`score-library-chip ${typeFilter === type.value && !favoritesOnly ? 'active' : ''}`}
-                    aria-pressed={typeFilter === type.value && !favoritesOnly}
+                    className={'score-library-chip ' + (typeFilter === 'all' && !favoritesOnly ? 'active' : '')}
+                    aria-pressed={typeFilter === 'all' && !favoritesOnly}
                     onClick={() => {
-                      setTypeFilter(type.value)
+                      setTypeFilter('all')
                       setFavoritesOnly(false)
                     }}
-                  >{type.short}</button>
-                ))}
+                  >全部 {scores.length}</button>
+                  <button
+                    type="button"
+                    className={'score-library-chip ' + (favoritesOnly ? 'active' : '')}
+                    aria-pressed={favoritesOnly}
+                    onClick={() => {
+                      setTypeFilter('all')
+                      setFavoritesOnly(true)
+                    }}
+                  >★ 收藏 {scores.filter((score) => score.favorite).length}</button>
+                  {SCORE_TYPES.map((type) => (
+                    <button
+                      key={type.value}
+                      type="button"
+                      className={'score-library-chip ' + (typeFilter === type.value && !favoritesOnly ? 'active' : '')}
+                      aria-pressed={typeFilter === type.value && !favoritesOnly}
+                      onClick={() => {
+                        setTypeFilter(type.value)
+                        setFavoritesOnly(false)
+                      }}
+                    >{type.short} {scores.filter((score) => score.type === type.value).length}</button>
+                  ))}
+                </div>
+                <div className="score-library-sort">
+                  <label htmlFor="score-library-sort">排序</label>
+                  <select
+                    id="score-library-sort"
+                    className="score-library-select"
+                    value={sortBy}
+                    onChange={(event) => setSortBy(event.target.value as SortBy)}
+                    aria-label="曲譜排序方式"
+                  >
+                    <option value="title-asc">曲名排序</option>
+                    <option value="artist-asc">歌手排序</option>
+                    <option value="updated-desc">最近更新</option>
+                    <option value="updated-asc">最早更新</option>
+                    <option value="favorites-first">收藏優先</option>
+                  </select>
+                </div>
               </div>
             </div>
             {libraryOperationMessage && <div className="score-library-status" role="status">{libraryOperationMessage}</div>}
