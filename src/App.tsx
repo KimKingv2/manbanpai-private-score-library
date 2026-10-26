@@ -93,6 +93,15 @@ function ReaderRoute({ scoreId, isAdmin, useLegacyVocalReader }: { scoreId:strin
     return () => { cancelled = true }
   }, [scoreId])
 
+  // Keep the browser tab title in sync with the score currently being read.
+  useEffect(() => {
+    if (!score?.title?.trim()) return
+    document.title = `${score.title.trim()}｜慢半拍譜間`
+    return () => {
+      document.title = '慢半拍譜間'
+    }
+  }, [score?.title])
+
   if (error) return <main style={readerPageStyle}><p>{error}</p></main>
   if (!score) return <main style={readerPageStyle}>正在載入曲譜…</main>
 
