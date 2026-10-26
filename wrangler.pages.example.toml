@@ -1,0 +1,13 @@
+# 複製成 wrangler.toml 後，將 database_id 換成 Cloudflare D1 的真實 ID。
+name = "manbanpai"
+compatibility_date = "2026-10-21"
+pages_build_output_dir = "./dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "manbanpai-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "manbanpai-data"

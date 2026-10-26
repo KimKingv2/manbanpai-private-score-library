@@ -1,0 +1,36 @@
+﻿# Dependencies and build output
+node_modules/
+dist/
+.wrangler/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Local patches and backups
+apply-*.cjs
+*.bak
+src備份.7z
+r2-test.txt
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
+
+# Local archives and backup files
+*.7z
+*.bak
+
+# Local patch scripts, not application source
+/apply-*.cjs
+/remove-*.cjs
+
+# Local-only test assets and reference files
+/public/fingerstyle-pdf-mp3-test/
+/public/pdf-xml-test/
+/public/piano-pdf-mp3-test/
+/reference/
+/_worker.bundle

@@ -1,0 +1,13 @@
+name = "manbanpai"
+compatibility_date = "2026-10-21"
+pages_build_output_dir = "./dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "manbanpai-db"
+database_id = "a6e8a358-f196-41d4-8911-4c9a6132fb6a"
+preview_database_id = "DB"
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "manbanpai-assets"

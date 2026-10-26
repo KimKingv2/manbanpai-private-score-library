@@ -1,0 +1,25 @@
+慢半拍譜間｜三類四件套強制整合補丁檔案清單
+
+解壓後按相對路徑覆蓋／新增。此清單不包含自身。
+
+     1977 bytes  SHA256 4009110ba9f94fb875da384572bdc0ba79e9991efe1d01cf29536d0b73640f58  functions/api/score-assets-map.ts
+     5840 bytes  SHA256 fdf2d5224de86b0dfe3cae408f0667cc1490d139e79a25e51ce7fba1ed0e3c95  functions/api/score-assets/[scoreId]/[kind].ts
+     3294 bytes  SHA256 a2da9df6dcd7dfdfe44945c500dba98cfc0b287413ce27fa4f813264fc281a01  PRELAUNCH_CHECKLIST.md
+     3966 bytes  SHA256 61c00513b003f961e54d3f1cda6c4d19ae327c505c08e77c66996fdeb3d754ab  public/fingerstyle-pdf-mp3-test/fingerstyle.mid
+  2602717 bytes  SHA256 e5760fe296f28c17b83130713b1a5ab7718dfa5c1a0d36ef5b4aa7ca1df0249a  public/fingerstyle-pdf-mp3-test/fingerstyle.mp3
+   519905 bytes  SHA256 efd6b79f0a448aede6ca063f5b714df93f8ffee4a8386ed355697317fd9f3476  public/fingerstyle-pdf-mp3-test/fingerstyle.musicxml
+   402092 bytes  SHA256 427c3378b6c9d7bd95877700c19718436a6f152677c13d61465a039e2849cc9f  public/fingerstyle-pdf-mp3-test/fingerstyle.pdf
+     8335 bytes  SHA256 294cd7d1db70c58561857742136b0253fac8d6ccbadf59944cb14cce55fa99d8  public/piano-pdf-mp3-test/piano.mid
+  5190336 bytes  SHA256 9e31ccfa9d6db21afe582c7ebaa1b930237b6f781984c7386e69430e9280f973  public/piano-pdf-mp3-test/piano.mp3
+   488395 bytes  SHA256 b216fea377fe0dcfd45bdf152e786549f23b5cbe9f5811560dc197cd425f4382  public/piano-pdf-mp3-test/piano.musicxml
+   111758 bytes  SHA256 987b0c24fa45307cd93a98e592c9ee83e6248926b9df499ebe8e2afddd580ab0  public/piano-pdf-mp3-test/piano.pdf
+     6282 bytes  SHA256 5212c0ec94e1294ecbfaec1bd04c0a2e5d586f813ce0866ee5fe683d34171f0f  README_FIRST.md
+     7683 bytes  SHA256 615e2603f0f4958dd649400494d612393b62fc96e93d4541a8872c79c7425c4b  src/App.tsx
+   113429 bytes  SHA256 76d125c390a77875b25ddfbe84231fbfc18460691635258b49ca6911a23dddfc  src/FingerstylePdfMp3Test.tsx
+    31353 bytes  SHA256 7da6b0e2a38376589e9c8f3eb96325f2315ef8f545d6259148f3d89a35385778  src/FingerstylePdfScoreDisplay.tsx
+    57804 bytes  SHA256 d3099364b500d4394041705cc15232aa5803dd5188e9d8d124891f7924b6f173  src/FingerstyleTheoryAnalysis.ts
+    95917 bytes  SHA256 c01fd1b9ddc466b22f71a103b99188b685647933110c06af9b8cc4743e163100  src/GuitarVocalPdfMp3Reader.tsx
+    58145 bytes  SHA256 bd293c0e590f7c34052a6f50911720550b835c832da79d369e596f7efcc9f98f  src/PianoMusicTheory.ts
+    81323 bytes  SHA256 7cddfcc4740fceb824b36e16951d86df94e8b2b25f5f35d8d95338eaef399b52  src/PianoPdfMp3Test.tsx
+    66519 bytes  SHA256 d1fd27ec3ef47ee39296415a243be8c9ccb41076178eb55a227594e4bf360562  src/PianoPdfScoreDisplay.tsx
+    82616 bytes  SHA256 f29353ddc5a77e4b64cad4363f41fe137952b55fca9d45bec139ffe458469451  src/ScoreLibrary.tsx

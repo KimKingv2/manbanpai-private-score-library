@@ -1,0 +1,53 @@
+# 吉他指彈路由整合（與鋼琴同站、核心獨立）
+
+請把以下內容合併進現有 src/App.tsx；不要用 reference/App.with-fingerstyle.tsx 整份覆蓋正式 App.tsx。
+
+1. 在 import 區新增：
+
+   import FingerstylePdfMp3Test from './FingerstylePdfMp3Test'
+
+2. 確保曲譜資料型別可包含以下欄位（欄位名稱以你的現有 API 為準）：
+
+   type LibraryScoreType = 'piano' | 'guitar-vocal' | 'guitar-fingerstyle'
+   type ScoreSummary = {
+     id: string
+     title: string
+     type: LibraryScoreType
+     fileUrl: string                 // MusicXML URL
+     pdfFileUrl?: string
+     midiFileUrl?: string
+     midiUrl?: string
+     mp3FileUrl?: string
+     mp3Url?: string
+     audioFileUrl?: string
+     musicXmlUrl?: string
+   }
+
+3. 在既有 ReaderRoute 取得曲譜資料和 PDF 對照資料後，整理 URL：
+
+   const xmlUrl = score.musicXmlUrl || score.fileUrl || ''
+   const mp3Url = score.mp3FileUrl || score.mp3Url || score.audioFileUrl || ''
+   const midiUrl = score.midiFileUrl || score.midiUrl || ''
+   const isFingerstyle = score.type === 'guitar-fingerstyle'
+
+4. 在原有閱讀器 JSX 中，將指彈分支放在最前，保留原有返回曲庫按鈕和外層布局。基本分支形態如下；保留你目前鋼琴分支中的其他條件：
+
+   {isFingerstyle ? (
+     <FingerstylePdfMp3Test
+       isAdmin={isAdmin}
+       pdfUrl={score.pdfFileUrl || ''}
+       xmlUrl={xmlUrl}
+       midiUrl={midiUrl}
+       mp3Url={mp3Url}
+     />
+   ) : usePianoPdfMp3 ? (
+     <PianoPdfMp3Test isAdmin={isAdmin} pdfUrl={score.pdfFileUrl || ''} xmlUrl={xmlUrl} midiUrl={midiUrl} mp3Url={mp3Url} />
+   ) : (
+     <ScoreReader fileUrl={xmlUrl} pdfFileUrl={score.pdfFileUrl} scoreType={score.type === 'piano' ? 'piano' : 'guitar-vocal'} />
+   )}
+
+   以上的 `usePianoPdfMp3` 必須沿用你目前鋼琴分支的既有條件與附件欄位；如果你現有 `App.tsx` 中的鋼琴路由更完整，保留原來那段，不要直接替換。指彈元件會在缺少任何一項附件時停用播放並提示補件。不要把 guitar-fingerstyle 傳入原有 ScoreReader 的 guitar-vocal 類型轉換。
+
+5. 只有曲庫目前沒有「吉他指彈譜」分類時，才參考 ../reference/ScoreLibrary.three-categories.tsx 合併類型、篩選與新增/編輯曲譜的類別選項；不要盲目覆蓋目前完整的 ScoreLibrary.tsx。
+
+URL 正式接入前，必須確認 /api/scores 或專案現有附件對照 API 確實回傳指彈曲目的 PDF、MusicXML、MIDI、MP3 四個 URL。不能只新增前端分類而讓每個 URL 都是空值。
