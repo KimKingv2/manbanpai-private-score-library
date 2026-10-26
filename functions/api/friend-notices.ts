@@ -1,4 +1,4 @@
-import { getSession, type CloudEnv } from '../_lib/auth'
+import { getSession, isGuestNameAllowed, type CloudEnv } from '../_lib/auth'
 
 interface Env extends CloudEnv {}
 
@@ -9,6 +9,7 @@ type FriendNotice = {
   title: string
   message: string
   delayMs: number
+  accessEnabled: boolean
   enabled: boolean
 }
 
@@ -39,6 +40,7 @@ const DEFAULT_NOTICES: FriendNotice[] = [{
     '要开心呀！！！',
   ].join('\n'),
   delayMs: 1000,
+  accessEnabled: true,
   enabled: true,
 }]
 
@@ -49,20 +51,23 @@ function asText(value: unknown, maxLength: number): string {
 function cleanNotice(value: unknown, index = 0): FriendNotice | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const raw = value as Record<string, unknown>
-  const name = asText(raw.name, 80)
+  const name = asText(raw.name, 32)
   const title = asText(raw.title, 120)
   const message = typeof raw.message === 'string' ? raw.message.slice(0, 4000) : ''
-  if (!name || !title || !message.trim()) return null
+  const accessEnabled = raw.accessEnabled !== false
+  const enabled = raw.enabled !== false
+  if (!name || (enabled && (!title || !message.trim()))) return null
   const rawDelay = Number(raw.delayMs)
   const delayMs = Number.isFinite(rawDelay) ? Math.max(0, Math.min(MAX_DELAY_MS, Math.round(rawDelay))) : 1000
   return {
     id: asText(raw.id, 120) || `friend-notice-${index + 1}`,
     name,
     label: asText(raw.label, 80),
-    title,
+    title: title || '給你的一則小紙條',
     message,
     delayMs,
-    enabled: raw.enabled !== false,
+    accessEnabled,
+    enabled,
   }
 }
 
@@ -99,7 +104,7 @@ function validateIncomingNotices(input: unknown): { notices?: FriendNotice[]; er
     const record = raw as Record<string, unknown>
     const notice = cleanNotice(record, index)
     if (!notice) {
-      return { error: `第 ${index + 1} 則公告缺少觸發名字、標題或公告內容。` }
+      return { error: `第 ${index + 1} 位朋友請填寫登入名稱；若要顯示小紙條，還需要填寫標題與內容。` }
     }
     const nameKey = notice.name.toLocaleLowerCase()
     if (seenNames.has(nameKey)) return { error: `觸發名字「${notice.name}」重複了；每個名字請只設定一則公告。` }
@@ -119,7 +124,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
   const session = await getSession(request, env)
   if (!session) return json({ error: '請先登入才能使用朋友公告。' }, 401)
-
+  if (session.role === 'guest' && !await isGuestNameAllowed(env.DB, session.name)) {
+    return json({ error: '此名稱已關閉訪問，請聯絡 Kim。' }, 403)
+  }
   try {
     if (method === 'GET') {
       const url = new URL(request.url)
@@ -133,9 +140,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
       // A normal signed-in visitor receives only the notice matching the name they entered.
       // As requested for this private friend group, the display name is not treated as strong identity proof.
-      const requestedName = (url.searchParams.get('name') || '').trim().toLocaleLowerCase()
+      const requestedName = (session.role === 'guest' ? session.name : (url.searchParams.get('name') || '')).trim().toLocaleLowerCase()
       const notice = requestedName
-        ? notices.find(item => item.enabled && item.name.trim().toLocaleLowerCase() === requestedName) ?? null
+        ? notices.find(item => item.accessEnabled && item.enabled && item.name.trim().toLocaleLowerCase() === requestedName) ?? null
         : null
       return json({ notice })
     }

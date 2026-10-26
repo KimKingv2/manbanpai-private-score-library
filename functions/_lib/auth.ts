@@ -50,6 +50,37 @@ export async function getSession(request: Request, env: CloudEnv): Promise<Cloud
 export async function isAuthenticated(request: Request, env: CloudEnv): Promise<boolean> {
   return (await getSession(request, env)) !== null
 }
+
+const FRIEND_NOTICES_STATE_KEY = 'friend-notices:config'
+const DEFAULT_ALLOWED_GUEST_NAMES = ['月桑']
+
+/** Check the friend allowlist stored alongside the per-friend note settings. */
+export async function isGuestNameAllowed(db: D1Database, candidate: string): Promise<boolean> {
+  const requestedName = candidate.trim().toLocaleLowerCase()
+  if (!requestedName) return false
+
+  const row = await db.prepare('SELECT value_json FROM app_state WHERE state_key = ?')
+    .bind(FRIEND_NOTICES_STATE_KEY)
+    .first<{ value_json: string }>()
+
+  // On a fresh database, preserve the one built-in friend entry until the admin saves a list.
+  if (!row?.value_json) {
+    return DEFAULT_ALLOWED_GUEST_NAMES.some(name => name.toLocaleLowerCase() === requestedName)
+  }
+
+  try {
+    const stored = JSON.parse(String(row.value_json)) as { notices?: unknown }
+    if (!Array.isArray(stored.notices)) return false
+    return stored.notices.some(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+      const record = item as Record<string, unknown>
+      return record.accessEnabled !== false && typeof record.name === 'string' &&
+        record.name.trim().toLocaleLowerCase() === requestedName
+    })
+  } catch {
+    return false
+  }
+}
 export async function makeSessionCookie(env: CloudEnv, role: CloudRole, name: string): Promise<string> {
   const payload: CloudSession = { role, name, exp: Math.floor(Date.now() / 1000) + SESSION_SECONDS }
   const payloadText = toBase64Url(enc.encode(JSON.stringify(payload)))

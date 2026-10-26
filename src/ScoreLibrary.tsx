@@ -53,6 +53,7 @@ type FriendNotice = {
   title: string
   message: string
   delayMs: number
+  accessEnabled: boolean
   enabled: boolean
 }
 
@@ -1059,7 +1060,8 @@ export default function ScoreLibrary() {
       title: '給你的一則小紙條',
       message: '',
       delayMs: 1000,
-      enabled: true,
+      accessEnabled: true,
+      enabled: false,
     }])
     setNoticeManagerError('')
     setNoticeManagerStatus('')
@@ -1243,7 +1245,7 @@ export default function ScoreLibrary() {
               <button type="button" className="score-library-button" disabled={libraryBusy} onClick={() => setBatchTypePickerOpen(true)}>批次匯入四件套</button>
               <button type="button" className="score-library-button" disabled={libraryBusy} onClick={exportLibraryBackup}>匯出備份</button>
               <button type="button" className="score-library-button" disabled={libraryBusy} onClick={() => backupInputRef.current?.click()}>匯入備份</button>
-              <button type="button" className="score-library-button" onClick={() => { void openNoticeManager() }}>朋友公告設定</button>
+              <button type="button" className="score-library-button" onClick={() => { void openNoticeManager() }}>朋友訪問管理</button>
               <button type="button" className="score-library-button score-library-button-primary" onClick={openNewScore}>＋ 新增樂譜</button>
             </> : <span className="score-library-meta-chip">歡迎！{name}，從第一個音符開始，今天也慢慢來。</span>}
             <ManbanpaiThemeToggle />
@@ -1545,46 +1547,54 @@ export default function ScoreLibrary() {
             aria-modal="true"
             aria-labelledby="friend-notice-manager-title"
           >
-            <h2 id="friend-notice-manager-title">朋友專屬公告設定</h2>
-            <p>公告設定會儲存在 Cloudflare 的現有 D1 資料庫。以後新增朋友、改文案、調整延遲或停用公告，都可以在這裡完成，不必修改程式碼或重新部署。</p>
+            <h2 id="friend-notice-manager-title">朋友訪問與專屬小紙條</h2>
+            <p>每個名字代表一位朋友。勾選「允許訪問」才可用這個名字登入；「顯示小紙條」獨立控制登入後是否彈出專屬通知。新增朋友時預設不顯示小紙條，你可以填好標題和內容後再開啟。移除或關閉訪問會阻止該名字之後再次登入。設定儲存在 Cloudflare D1，儲存後立即生效，不必重新部署。</p>
 
             {noticeManagerLoading ? (
               <div className="score-library-empty">正在讀取雲端公告設定…</div>
             ) : (
               <div className="score-library-notice-manager-list">
                 {friendNotices.length === 0 && (
-                  <div className="score-library-empty">目前沒有專屬公告。按「新增朋友公告」即可建立第一則。</div>
+                  <div className="score-library-empty">目前沒有開放訪問的朋友。按「新增朋友」建立名稱，並可為對方編輯專屬小紙條。</div>
                 )}
                 {friendNotices.map((notice, index) => (
                   <fieldset className="score-library-notice-editor" key={notice.id}>
                     <div className="score-library-notice-editor-head">
-                      <strong>公告 {index + 1}</strong>
+                      <strong>朋友 {index + 1}</strong>
                       <div className="score-library-notice-editor-actions">
+                        <label className="score-library-checkbox" style={{ margin: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={notice.accessEnabled}
+                            onChange={(event) => updateFriendNotice(notice.id, { accessEnabled: event.target.checked })}
+                          />
+                          允許訪問
+                        </label>
                         <label className="score-library-checkbox" style={{ margin: 0 }}>
                           <input
                             type="checkbox"
                             checked={notice.enabled}
                             onChange={(event) => updateFriendNotice(notice.id, { enabled: event.target.checked })}
                           />
-                          啟用
+                          顯示小紙條
                         </label>
                         <button
                           type="button"
                           className="score-library-delete"
                           onClick={() => removeFriendNotice(notice.id)}
-                        >刪除</button>
+                        >移除朋友</button>
                       </div>
                     </div>
                     <div className="score-library-field-grid">
                       <div className="score-library-field">
-                        <label htmlFor={`notice-name-${notice.id}`}>觸發名字</label>
+                        <label htmlFor={`notice-name-${notice.id}`}>朋友登入名稱</label>
                         <input
                           id={`notice-name-${notice.id}`}
                           className="score-library-input"
                           value={notice.name}
                           onChange={(event) => updateFriendNotice(notice.id, { name: event.target.value })}
                           placeholder="例如：月桑"
-                          maxLength={80}
+                          maxLength={32}
                         />
                       </div>
                       <div className="score-library-field">
@@ -1656,7 +1666,7 @@ export default function ScoreLibrary() {
                 className="score-library-button"
                 disabled={noticeManagerLoading || noticeManagerSaving}
                 onClick={addFriendNotice}
-              >＋ 新增朋友公告</button>
+              >＋ 新增朋友</button>
               <button
                 type="button"
                 className="score-library-button score-library-button-primary"

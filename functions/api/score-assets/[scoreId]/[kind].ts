@@ -1,4 +1,4 @@
-import { getSession, type CloudEnv } from '../../../_lib/auth'
+import { getSession, isGuestNameAllowed, type CloudEnv } from '../../../_lib/auth'
 interface Env extends CloudEnv {}
 type AssetKind = 'pdf'|'mp3'|'midi'
 const json = (body: unknown, status = 200, extra: Record<string,string> = {}) => new Response(JSON.stringify(body), { status, headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...extra} })
@@ -18,6 +18,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env, params }) =>
   const stateKey = `score-asset:${scoreId}`
   const session = await getSession(request, env)
   if (!session) return json({error:'請先登入才能存取曲譜附件。'},401)
+  if (session.role === 'guest' && !await isGuestNameAllowed(env.DB, session.name)) return json({error:'此名稱已關閉訪問。'},403)
   if ((method === 'PUT' || method === 'DELETE') && session.role !== 'admin') return json({error:'只有管理員可以上傳或刪除曲譜附件。'},403)
 
   try {

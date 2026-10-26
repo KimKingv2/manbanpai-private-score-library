@@ -91,7 +91,7 @@ export default function CloudAuthGate({ children }: Props) {
     </div>
     {mode === 'guest' ? <>
       <label htmlFor="scorecloud-name" style={labelStyle}>姓名</label>
-      <input id="scorecloud-name" type="text" autoComplete="name" maxLength={32} value={name} onChange={e => setName(e.target.value)} required placeholder="請輸入你的姓名" style={inputStyle} />
+      <input id="scorecloud-name" type="text" autoComplete="name" maxLength={32} value={name} onChange={e => setName(e.target.value)} required placeholder="請輸入 Kim 為你開通的名稱" style={inputStyle} />
       <p style={{ color: '#a6b2c1', fontSize: 12, lineHeight: 1.7, margin: '10px 0 0' }}>歡迎來到慢半拍譜間。<br /><br />
 這裡收藏著Kim喜愛的樂譜，也留著一些想與你们分享的旋律。願在忙碌的日子裡，我们都能偶爾放慢腳步，翻開一頁樂譜，彈一段喜歡的旋律，找回屬於自己的節奏。<br /><br />
 願常有音樂相伴。<br />：）</p>

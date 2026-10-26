@@ -1,4 +1,4 @@
-import { clearSessionCookie, getSession, makeSessionCookie, passwordMatches, cleanGuestName, type CloudEnv } from '../_lib/auth'
+import { clearSessionCookie, getSession, makeSessionCookie, passwordMatches, cleanGuestName, isGuestNameAllowed, type CloudEnv } from '../_lib/auth'
 interface Env extends CloudEnv {}
 type Score = { id:string; title:string; artist?:string; coverUrl?:string; keySignature?:string; timeSignature?:string; tempoBpm?:string; measureCount?:string; fileUrl:string; type:'piano'|'guitar-vocal'|'guitar-fingerstyle'; category?:string; favorite?:boolean; updatedAt?:number; sourceFileName?:string }
 const json = (body: unknown, status = 200, extra: Record<string,string> = {}) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...extra } })
@@ -17,6 +17,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   try {
     if (parts[0] === 'auth' && parts[1] === 'check' && method === 'GET') {
       const session = await getSession(request, env)
+      if (session?.role === 'guest' && !await isGuestNameAllowed(env.DB, session.name)) {
+        return json({ authenticated:false, role:null, name:null }, 200, { 'Set-Cookie': clearSessionCookie() })
+      }
       return json({ authenticated: !!session, role: session?.role ?? null, name: session?.name ?? null })
     }
     if (parts[0] === 'auth' && parts[1] === 'login' && method === 'POST') {
@@ -33,6 +36,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
         const name = cleanGuestName(body.name)
         if (!name) return json({ error: '請輸入姓名。' }, 400)
         if (name.length > 32) return json({ error: '姓名最多 32 個字元。' }, 400)
+        if (!await isGuestNameAllowed(env.DB, name)) {
+          return json({ error: `「${name}」尚未開放訪問，請確認輸入名稱或聯絡 Kim 開通。` }, 403)
+        }
         return json({ ok:true, role:'guest', name }, 200, { 'Set-Cookie': await makeSessionCookie(env, 'guest', name) })
       }
       return json({ error: '請選擇管理者或朋友登入方式。' }, 400)
@@ -43,11 +49,21 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       await env.DB.prepare('SELECT 1').first()
       return json({ ok:true, database:'ok', storage:'bound' })
     }
+
+    // Require an active, allowlisted session for every cloud-library API below.
+    const session = await getSession(request, env)
+    if (!session) return json({ error:'請先登入才能存取雲端曲庫。' }, 401)
+    if (session.role === 'guest' && !await isGuestNameAllowed(env.DB, session.name)) {
+      return json({ error:'此名稱已關閉訪問，請重新登入或聯絡 Kim。' }, 403, { 'Set-Cookie': clearSessionCookie() })
+    }
+    const isAdmin = session.role === 'admin'
+
     if (parts[0] === 'scores' && parts.length === 1 && method === 'GET') {
       const result = await env.DB.prepare('SELECT * FROM scores ORDER BY favorite DESC, title COLLATE NOCASE ASC').all()
       return json((result.results||[]).map(fromRow))
     }
     if (parts[0] === 'scores' && parts[1] === 'bulk' && method === 'PUT') {
+      if (!isAdmin) return json({ error:'只有管理員可以修改雲端曲庫。' }, 403)
       const scores = await request.json() as Score[]
       if (!Array.isArray(scores) || scores.length > 5000) return json({ error:'曲庫格式不正確或曲目過多。' }, 400)
       const unique = new Map<string,Score>()
@@ -56,21 +72,25 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       return json({ ok:true, saved:unique.size })
     }
     if (parts[0] === 'scores' && parts.length === 1 && method === 'POST') {
+      if (!isAdmin) return json({ error:'只有管理員可以修改雲端曲庫。' }, 403)
       const score = await request.json() as Score
       await upsertScore(env.DB, score)
       return json({ ok:true, id:score.id }, 201)
     }
     if (parts[0] === 'scores' && parts[1] && parts.length === 2 && method === 'PUT') {
+      if (!isAdmin) return json({ error:'只有管理員可以修改雲端曲庫。' }, 403)
       const score = { ...(await request.json() as Score), id:parts[1] }
       await upsertScore(env.DB, score)
       return json({ ok:true })
     }
     if (parts[0] === 'scores' && parts[1] && parts.length === 2 && method === 'DELETE') {
+      if (!isAdmin) return json({ error:'只有管理員可以修改雲端曲庫。' }, 403)
       await env.DB.prepare('DELETE FROM scores WHERE id=?').bind(parts[1]).run()
       return json({ ok:true })
     }
 
     if (parts[0] === 'files' && parts[1] && parts.length === 2 && method === 'PUT') {
+      if (!isAdmin) return json({ error:'只有管理員可以上傳曲譜檔案。' }, 403)
       const body = await request.json() as { id?:string; name?:string; text?:string; mimeType?:string }
       if (typeof body.text !== 'string' || body.text.length > 80 * 1024 * 1024) return json({ error:'MusicXML 內容缺失或超過 80 MB。' }, 400)
       const id = parts[1]
@@ -99,6 +119,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       return new Response(object.body, { headers })
     }
     if (parts[0] === 'files' && parts[1] && parts.length === 2 && method === 'DELETE') {
+      if (!isAdmin) return json({ error:'只有管理員可以刪除曲譜檔案。' }, 403)
       const meta = await env.DB.prepare('SELECT object_key FROM score_files WHERE id=?').bind(parts[1]).first<{object_key:string}>()
       if (meta) await env.DATA.delete(meta.object_key)
       await env.DB.prepare('DELETE FROM score_files WHERE id=?').bind(parts[1]).run()

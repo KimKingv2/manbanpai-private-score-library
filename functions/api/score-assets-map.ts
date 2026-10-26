@@ -1,4 +1,4 @@
-import { getSession, type CloudEnv } from '../_lib/auth'
+import { getSession, isGuestNameAllowed, type CloudEnv } from '../_lib/auth'
 interface Env extends CloudEnv {}
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store' } })
 
@@ -7,6 +7,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error:'此路由只供讀取附件索引。' },405)
   const session = await getSession(request, env)
   if (!session) return json({ error:'請先登入才能讀取曲譜附件索引。' },401)
+  if (session.role === 'guest' && !await isGuestNameAllowed(env.DB, session.name)) return json({ error:'此名稱已關閉訪問。' },403)
   try {
     const result = await env.DB.prepare("SELECT state_key,value_json FROM app_state WHERE state_key LIKE 'score-asset:%'").all<any>()
     const map: Record<string, Record<string, any>> = {}
