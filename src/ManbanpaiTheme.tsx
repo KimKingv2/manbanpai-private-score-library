@@ -5,11 +5,11 @@ const THEME_KEY = 'manbanpai-theme-mode-v1'
 const THEME_EVENT = 'manbanpai-theme-change'
 
 function readTheme(): ManbanpaiTheme {
-  if (typeof window === 'undefined') return 'night'
+  if (typeof window === 'undefined') return 'day'
   try {
-    return window.localStorage.getItem(THEME_KEY) === 'day' ? 'day' : 'night'
+    return window.localStorage.getItem(THEME_KEY) === 'night' ? 'night' : 'day'
   } catch {
-    return 'night'
+    return 'day'
   }
 }
 
