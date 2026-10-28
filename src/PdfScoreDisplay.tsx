@@ -71,6 +71,98 @@ type LabelCandidate = {
   fontSize: number
 }
 
+type PdfRasterData = { width: number; height: number; scale: number; pixels: Uint8ClampedArray }
+
+async function renderPdfRasterData(page: any, scale = 1.5): Promise<PdfRasterData | null> {
+  const viewport = page.getViewport({ scale })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(viewport.width)
+  canvas.height = Math.ceil(viewport.height)
+  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true })
+  if (!context) return null
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  let task: any = null
+  try {
+    task = page.render({ canvasContext: context, viewport })
+    await task.promise
+    const pixels = new Uint8ClampedArray(context.getImageData(0, 0, canvas.width, canvas.height).data)
+    return { width: canvas.width, height: canvas.height, scale, pixels }
+  } catch {
+    return null
+  } finally {
+    try { task?.cancel?.() } catch { /* render has completed */ }
+    canvas.width = 0
+    canvas.height = 0
+  }
+}
+
+function detectTerminalBarlineX(
+  raster: PdfRasterData,
+  labelTop: number,
+  lastMeasureStartX: number,
+  expectedTerminalX: number,
+  expectedMeasureWidth: number,
+): number | null {
+  const { width, height, scale, pixels } = raster
+  // Search from the last measure's start through a little beyond the predicted
+  // edge. Guitar Pro can make the final measure wider or narrower than its siblings.
+  const xStart = Math.max(1, Math.floor((lastMeasureStartX + 20) * scale))
+  const xEnd = Math.min(width - 2, Math.ceil((expectedTerminalX + expectedMeasureWidth * 0.48) * scale))
+  // Guitar-vocal TAB systems normally span roughly 40-50 PDF points below the
+  // measure-number row. Keep the scan within that system rather than the whole page.
+  const yStart = Math.max(1, Math.floor((labelTop + 3) * scale))
+  const yEnd = Math.min(height - 2, Math.ceil((labelTop + 58) * scale))
+  if (xEnd <= xStart || yEnd - yStart < 16 * scale) return null
+
+  const isDark = (x: number, y: number) => {
+    const offset = (y * width + x) * 4
+    return (pixels[offset] + pixels[offset + 1] + pixels[offset + 2]) / 3 < 168
+  }
+  const span = yEnd - yStart
+  const minimumRun = Math.max(13 * scale, Math.round(span * 0.34))
+  const candidates: Array<{ x: number; run: number }> = []
+  for (let x = xStart; x <= xEnd; x++) {
+    let bestRun = 0
+    let run = 0
+    for (let y = yStart; y <= yEnd; y++) {
+      const dark = isDark(x - 1, y) || isDark(x, y) || isDark(x + 1, y)
+      run = dark ? run + 1 : 0
+      if (run > bestRun) bestRun = run
+    }
+    if (bestRun >= minimumRun) candidates.push({ x, run: bestRun })
+  }
+  if (!candidates.length) return null
+
+  const clusters: Array<Array<{ x: number; run: number }>> = []
+  for (const candidate of candidates) {
+    const last = clusters[clusters.length - 1]
+    if (last && candidate.x - last[last.length - 1].x <= 3 * scale) last.push(candidate)
+    else clusters.push([candidate])
+  }
+
+  const ranked = clusters.map(cluster => {
+    const strongestRun = Math.max(...cluster.map(point => point.run))
+    const core = cluster.filter(point => point.run >= strongestRun - Math.max(1, scale))
+    const centerX = core.reduce((sum, point) => sum + point.x, 0) / Math.max(1, core.length) / scale
+    const distance = Math.abs(centerX - expectedTerminalX)
+    // Prefer a continuous engraved barline, but penalize a candidate far from the
+    // measured bar spacing so a note stem elsewhere in the row is not selected.
+    const score = strongestRun - distance * scale * 0.38
+    return { cluster, strongestRun, centerX, score }
+  }).filter(item => item.strongestRun >= minimumRun)
+    .sort((a, b) => b.score - a.score)
+  const chosen = ranked[0]
+  if (!chosen) return null
+
+  // A double/final barline can be two close vertical strokes. Use the rightmost
+  // strong column in that cluster so the clickable region ends on the engraved edge.
+  const strongestRun = Math.max(...chosen.cluster.map(point => point.run))
+  const strongColumns = chosen.cluster.filter(point => point.run >= strongestRun - Math.max(1, scale))
+  if (!strongColumns.length) return chosen.centerX
+  return Math.max(...strongColumns.map(point => point.x)) / scale
+}
+
 function monotonicSample(source: number[], targetCount: number): number[] {
   const values = [...new Set(source.filter(Number.isFinite).map(value => Math.max(0, Math.min(0.999, value))))].sort((a, b) => a - b)
   if (!values.length || targetCount <= 0) return []
@@ -488,6 +580,21 @@ export default function PdfScoreDisplay({
             .map((item, index) => ({ ...item, measureIndex: index }))
 
         const boxesByPage = new Map<number, PdfMeasureBox[]>()
+        const measureRows: Array<Array<(typeof anchors)[number]>> = []
+        for (const item of [...anchors].sort((a, b) => a.pageIndex - b.pageIndex || a.label.top - b.label.top || a.label.x - b.label.x)) {
+          let row = measureRows.find(candidate => candidate.length > 0 && candidate[0].pageIndex === item.pageIndex && Math.abs(candidate[0].label.top - item.label.top) <= 3.2)
+          if (!row) { row = []; measureRows.push(row) }
+          row.push(item)
+        }
+        const allObservedMeasureWidths = measureRows.flatMap(row => {
+          const xs = [...row].sort((a, b) => a.label.x - b.label.x).map(item => item.label.x + item.label.width / 2)
+          return xs.slice(1).map((x, index) => x - xs[index]).filter(width => Number.isFinite(width) && width >= 24 && width <= 220)
+        }).sort((a, b) => a - b)
+        const globalTypicalMeasureWidth = allObservedMeasureWidths.length
+          ? allObservedMeasureWidths[Math.floor(allObservedMeasureWidths.length / 2)]
+          : null
+        const pageRasterCache = new Map<number, Promise<PdfRasterData | null>>()
+        const terminalBoundaryCache = new Map<string, number | null>()
         for (const anchor of anchors) {
           const siblings = anchors
             .filter(item => item.pageIndex === anchor.pageIndex && Math.abs(item.label.top - anchor.label.top) <= 3.2)
@@ -498,7 +605,40 @@ export default function PdfScoreDisplay({
           // Use the label center instead of its left edge minus a fixed offset,
           // which made every internal measure zone drift a few points to the left.
           const anchorBarX = anchor.label.x + anchor.label.width / 2
-          const nextBarX = next ? next.label.x + next.label.width / 2 : anchor.width - 28.1
+          const siblingBarXs = siblings.map(item => item.label.x + item.label.width / 2)
+          const rowWidths = siblingBarXs.slice(1)
+            .map((x, index) => x - siblingBarXs[index])
+            .filter(width => Number.isFinite(width) && width >= 24 && width <= 220)
+            .sort((a, b) => a - b)
+          const estimatedMeasureWidth = rowWidths.length
+            ? rowWidths[Math.floor(rowWidths.length / 2)]
+            : globalTypicalMeasureWidth ?? Math.min(120, Math.max(32, (anchor.width - anchorBarX) * 0.34))
+          const expectedTerminalX = anchorBarX + estimatedMeasureWidth
+          let terminalBarX: number | null = null
+          if (!next) {
+            const rowKey = `${anchor.pageIndex}:${Math.round(anchor.label.top * 10)}`
+            if (terminalBoundaryCache.has(rowKey)) {
+              terminalBarX = terminalBoundaryCache.get(rowKey) ?? null
+            } else {
+              let rasterPromise = pageRasterCache.get(anchor.pageIndex)
+              if (!rasterPromise) {
+                const page = rawPages[anchor.pageIndex]?.page
+                rasterPromise = page ? renderPdfRasterData(page) : Promise.resolve(null)
+                pageRasterCache.set(anchor.pageIndex, rasterPromise)
+              }
+              const raster = await rasterPromise
+              terminalBarX = raster
+                ? detectTerminalBarlineX(raster, anchor.label.top, anchorBarX, expectedTerminalX, estimatedMeasureWidth)
+                : null
+              terminalBoundaryCache.set(rowKey, terminalBarX)
+            }
+          }
+          const measuredTerminalIsPlausible = terminalBarX !== null &&
+            terminalBarX >= anchorBarX + Math.max(20, estimatedMeasureWidth * 0.42) &&
+            Math.abs(terminalBarX - expectedTerminalX) <= Math.max(18, estimatedMeasureWidth * 0.62)
+          const nextBarX = next
+            ? next.label.x + next.label.width / 2
+            : measuredTerminalIsPlausible ? terminalBarX! : expectedTerminalX
           // The first measure in each system has no preceding printed bar number;
           // start at the first playable note column, preserving the current layout.
           const xStart = Math.max(0, anchor.label.x < 55 ? 48 : anchorBarX)

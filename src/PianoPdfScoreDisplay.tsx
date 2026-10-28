@@ -252,12 +252,20 @@ function isDarkPixel(data: Uint8ClampedArray, width: number, x: number, y: numbe
 function extractHorizontalLineRuns(data: Uint8ClampedArray, width: number, height: number) {
   const x0 = Math.round(width * 0.035)
   const x1 = Math.round(width * 0.965)
-  const minimum = Math.round((x1 - x0) * 0.19)
+  const scanWidth = Math.max(1, x1 - x0)
+  // Notes, stems, pedal lines, and antialiasing can create weak dark rows between
+  // real staff lines. Including those rows merges two adjacent staff lines into one
+  // average and causes the detector to lose the top staff of some systems. Keep only
+  // strong horizontal row peaks; actual staff-line strokes span a substantial part
+  // of the page, while most connecting artifacts are much weaker.
+  const minimum = Math.round(scanWidth * 0.19)
+  const minimumCoverage = Math.max(0.30, minimum / scanWidth)
   const active: Array<{ y: number; coverage: number }> = []
   for (let y = 0; y < height; y++) {
     let dark = 0
     for (let x = x0; x < x1; x++) if (isDarkPixel(data, width, x, y)) dark++
-    if (dark >= minimum) active.push({ y, coverage: dark / (x1 - x0) })
+    const coverage = dark / scanWidth
+    if (dark >= minimum && coverage >= minimumCoverage) active.push({ y, coverage })
   }
   const runs: Array<{ y: number; coverage: number }> = []
   let group: Array<{ y: number; coverage: number }> = []
@@ -269,6 +277,8 @@ function extractHorizontalLineRuns(data: Uint8ClampedArray, width: number, heigh
     })
     group = []
   }
+  // Cluster only adjacent strong core pixels. Weak antialias rows no longer bridge
+  // separate staff lines, so each printed line retains its own vertical coordinate.
   for (const item of active) {
     if (group.length && item.y - group[group.length - 1].y > 2) flush()
     group.push(item)
@@ -276,7 +286,6 @@ function extractHorizontalLineRuns(data: Uint8ClampedArray, width: number, heigh
   flush()
   return runs
 }
-
 function detectStaffGroups(data: Uint8ClampedArray, width: number, rasterScale: number): RasterStaff[] {
   // Canvas ImageData stores four bytes per pixel; derive the raster height from the buffer.
   // The previous build referenced an undeclared `height` here and crashed during PDF analysis.
@@ -359,7 +368,7 @@ function detectSystemBarXs(
   const yTop = Math.min(upper.top, lower.top) * rasterScale
   const yBottom = Math.max(upper.bottom, lower.bottom) * rasterScale
   const fullHeight = Math.max(1, yBottom - yTop)
-  const threshold = Math.max(20 * rasterScale, fullHeight * 0.52)
+  const threshold = Math.max(20 * rasterScale, fullHeight * 0.65)
   const candidates: Array<{ x: number; score: number }> = []
   for (let x = xStart; x <= xEnd; x++) {
     const run = Math.max(...[-3, -2, -1, 0, 1, 2, 3].map(dx =>
@@ -480,8 +489,8 @@ async function detectPianoSystems(
             printedNumber: -1,
             xStart,
             xEnd,
-            yTop: Math.max(0, upper.top - 7),
-            yBottom: Math.min(pageHeight, lower.bottom + 7),
+            yTop: Math.max(0, upper.top - 8),
+            yBottom: Math.min(pageHeight, lower.bottom + 8),
           })
         }
         if (boxes.length) systems.push({
@@ -490,8 +499,8 @@ async function detectPianoSystems(
           pageHeight,
           xStart: left,
           xEnd: right,
-          yTop: Math.max(0, upper.top - 7),
-          yBottom: Math.min(pageHeight, lower.bottom + 7),
+          yTop: Math.max(0, upper.top - 8),
+          yBottom: Math.min(pageHeight, lower.bottom + 8),
           barXs: clean,
           boxes,
         })
@@ -503,10 +512,81 @@ async function detectPianoSystems(
     // whole row when beams/ledger lines alter raster coverage, which previously shifted
     // several later systems. For labelled rows, scan the two staff bands locally instead.
     if (systemLabelRows) {
-      // Keep the reliable label-relative scan as the source of barline candidates, but use
-      // detected staff extents when a real system is confidently aligned to the label row.
-      // This adapts to different page margins without trusting global barline candidates that
-      // can miss a short pickup boundary. The pixel detector below remains local to each row.
+      // Prefer detected grand-staff geometry whenever it matches a system label.
+      // For unmatched rows, keep the local label-relative detector as a fallback.
+      // Calibrate fallback bounds from systems whose real staff geometry was detected.
+      // If one row is missed by raster staff detection, reuse this page's measured offsets
+      // instead of the fixed label-relative bands, which can make the top edge asymmetric.
+      // Reject a false staff pairing when its vertical span is far from this page's typical piano system.
+      const systemHeights = systems
+        .map(system => system.yBottom - system.yTop)
+        .filter(height => Number.isFinite(height) && height >= 40 && height <= 130)
+      const typicalSystemHeight = median(systemHeights, 78)
+      const isPlausibleSystemGeometry = (system: RasterSystem) => {
+        const height = system.yBottom - system.yTop
+        return Number.isFinite(height) &&
+          height >= Math.max(48, typicalSystemHeight * 0.72) &&
+          height <= Math.min(112, typicalSystemHeight * 1.28)
+      }
+      // Find the actual upper and lower five-line staves for each labelled system separately.
+      // This avoids inheriting a bad global staff pairing on rows whose notation is unusually dense.
+      const findLabelledStaffPair = (labelTop: number, opening = false): { yTop: number; yBottom: number } | undefined => {
+        const expectedUpperTop = labelTop + (opening ? 16 : 13)
+        const upperCandidates = staffs
+          .map((staff, index) => ({ staff, index, distance: Math.abs(staff.top - expectedUpperTop) }))
+          .filter(item => item.distance <= 28)
+          .sort((a, b) => a.distance - b.distance)
+
+        for (const upperCandidate of upperCandidates) {
+          const upper = upperCandidate.staff
+          const lowerCandidates = staffs
+            .map((staff, index) => {
+              const overlap = Math.min(upper.right, staff.right) - Math.max(upper.left, staff.left)
+              const minimumOverlap = Math.min(upper.right - upper.left, staff.right - staff.left) * 0.56
+              return {
+                staff,
+                index,
+                topOffset: staff.top - upper.top,
+                separation: staff.top - upper.bottom,
+                overlap,
+                minimumOverlap,
+              }
+            })
+            .filter(item => item.index > upperCandidate.index)
+            .filter(item => item.topOffset >= 28 && item.topOffset <= 62)
+            .filter(item => item.separation >= 5 && item.separation <= 42)
+            .filter(item => item.overlap >= Math.max(80, item.minimumOverlap))
+            .sort((a, b) => Math.abs(a.topOffset - 43) - Math.abs(b.topOffset - 43))
+
+          const lower = lowerCandidates[0]?.staff
+          if (!lower) continue
+          const span = lower.bottom - upper.top
+          if (!Number.isFinite(span) || span < 45 || span > 115) continue
+
+          // Both bounds use the real outer staff lines and the same 8 pt padding.
+          return {
+            yTop: Math.max(0, upper.top - 8),
+            yBottom: Math.min(pageHeight, lower.bottom + 8),
+          }
+        }
+        return undefined
+      }
+      const labelledGeometryOffsets = systemLabelRows
+        .map((row) => {
+          const targetY = row.top + 5
+          const match = systems
+            .map((system) => ({ system, distance: Math.abs(system.yTop - targetY) }))
+            .filter(item => isPlausibleSystemGeometry(item.system) && item.distance <= 36)
+            .sort((a, b) => a.distance - b.distance)[0]
+          if (!match) return null
+          return {
+            top: match.system.yTop - row.top,
+            bottom: match.system.yBottom - row.top,
+          }
+        })
+        .filter((item): item is { top: number; bottom: number } => item !== null)
+      const fallbackTopOffset = median(labelledGeometryOffsets.map(item => item.top), 5)
+      const fallbackBottomOffset = median(labelledGeometryOffsets.map(item => item.bottom), 84)
       const claimedStaffGeometry = new Set<number>()
       const makeLabelledSystem = (labelTop: number, opening = false): RasterSystem => {
         const nominalLeft = opening ? Math.min(pageWidth - 100, 62) : Math.min(pageWidth - 100, 36.7)
@@ -514,8 +594,11 @@ async function detectPianoSystems(
         const targetSystemY = labelTop + (opening ? 8 : 5)
         const geometryMatch = systems
           .map((system, index) => ({ system, index, distance: Math.abs(system.yTop - targetSystemY) }))
-          .filter(item => !claimedStaffGeometry.has(item.index) && item.distance <= 24)
+          .filter(item => !claimedStaffGeometry.has(item.index) && item.distance <= 36)
           .sort((a, b) => a.distance - b.distance)[0]
+        const verticalGeometryMatch = geometryMatch && isPlausibleSystemGeometry(geometryMatch.system)
+          ? geometryMatch
+          : undefined
         if (geometryMatch) claimedStaffGeometry.add(geometryMatch.index)
         const staffLeft = geometryMatch?.system.xStart ?? nominalLeft
         const staffRight = geometryMatch?.system.xEnd ?? nominalRight
@@ -538,7 +621,11 @@ async function detectPianoSystems(
           right: staffRight,
           coverage: 1,
         }
-        const bars = detectSystemBarXs(image.data, canvas.width, canvas.height, rasterScale, upper, lower)
+        // Prefer full-height barlines detected from the matching grand-staff system.
+        // Estimated label-relative bands can mistake note stems for barlines and shift measures.
+        const bars = geometryMatch
+          ? geometryMatch.system.barXs
+          : detectSystemBarXs(image.data, canvas.width, canvas.height, rasterScale, upper, lower)
         // The left boundary of a system's first measure is different from an internal
         // measure boundary: after a line break, the first measure begins at the system's
         // left edge, so estimating it at +8.7% of the page clips the measure's left side.
@@ -565,8 +652,11 @@ async function detectPianoSystems(
         for (const x of boundaries) {
           if (!clean.length || x - clean[clean.length - 1] >= 8) clean.push(x)
         }
-        const yTop = Math.max(0, upper.top - 8)
-        const yBottom = Math.min(pageHeight, lower.bottom + 7)
+        // Use the real grand-staff extent when this label row matches a detected system.
+        // Keep label-relative estimates only as a fallback for unmatched systems.
+        const localStaffPair = findLabelledStaffPair(labelTop, opening)
+        const yTop = localStaffPair?.yTop ?? verticalGeometryMatch?.system.yTop ?? Math.max(0, labelTop + fallbackTopOffset)
+        const yBottom = localStaffPair?.yBottom ?? verticalGeometryMatch?.system.yBottom ?? Math.min(pageHeight, labelTop + fallbackBottomOffset)
         const boxes: MeasureBox[] = []
         for (let index = 0; index < clean.length - 1; index++) {
           if (clean[index + 1] - clean[index] < 12) continue

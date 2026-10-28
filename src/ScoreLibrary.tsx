@@ -34,6 +34,7 @@ type ScoreDraft = Omit<ScoreRecord, 'id' | 'updatedAt'>
 type AssetKind = 'pdf' | 'mp3' | 'midi'
 type StoredAssetInfo = { url: string; fileName: string; mimeType?: string; sizeBytes?: number; uploadedAt?: number }
 type ScoreAssetsMap = Record<string, Partial<Record<AssetKind, StoredAssetInfo>>>
+type SharedCover = { id:string; url:string; fileName:string; mimeType:string; sizeBytes:number; uploadedAt:number }
 type TypeFilter = 'all' | ScoreType
 type SortBy = 'title-asc' | 'artist-asc' | 'updated-desc' | 'updated-asc' | 'favorites-first'
 
@@ -350,6 +351,11 @@ export default function ScoreLibrary() {
   const [scores, setScores] = useState<ScoreRecord[]>([])
   const [scoreAssetsMap, setScoreAssetsMap] = useState<ScoreAssetsMap>({})
   const [pendingAssetFiles, setPendingAssetFiles] = useState<Partial<Record<AssetKind, File>>>({})
+  const [pendingCoverFile, setPendingCoverFile] = useState<File | null>(null)
+  const [sharedCovers, setSharedCovers] = useState<SharedCover[]>([])
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false)
+  const [coverLibraryLoading, setCoverLibraryLoading] = useState(false)
+  const [coverLibraryError, setCoverLibraryError] = useState('')
   const [draftRecordId, setDraftRecordId] = useState<string | null>(null)
   const [hasLoaded, setHasLoaded] = useState(false)
   const [cloudReadyToSync, setCloudReadyToSync] = useState(false)
@@ -371,6 +377,7 @@ export default function ScoreLibrary() {
   const pdfFileInputRef = useRef<HTMLInputElement | null>(null)
   const mp3FileInputRef = useRef<HTMLInputElement | null>(null)
   const midiFileInputRef = useRef<HTMLInputElement | null>(null)
+  const coverImageInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     const root = document.documentElement
@@ -543,6 +550,7 @@ export default function ScoreLibrary() {
     setEditingId(null)
     setDraftRecordId(createId())
     setPendingAssetFiles({})
+    setPendingCoverFile(null)
     setDraft({ ...EMPTY_DRAFT })
     setFormError('')
     setEditorOpen(true)
@@ -552,6 +560,7 @@ export default function ScoreLibrary() {
     setEditingId(score.id)
     setDraftRecordId(score.id)
     setPendingAssetFiles({})
+    setPendingCoverFile(null)
     setDraft({
       title: score.title,
       artist: score.artist ?? '',
@@ -893,10 +902,52 @@ export default function ScoreLibrary() {
     setFormError(`已選擇「${file.name}」，按「儲存」後才會上傳並綁定到這份曲譜。`)
   }
 
+  function handleCoverImageFile(file: File | undefined) {
+    if (!file) return
+    const valid = /\.(jpe?g|png|webp|gif)$/i.test(file.name)
+    if (!valid) { setFormError('封面圖片格式不正確，請選擇 JPG、PNG、WebP 或 GIF。'); return }
+    if (file.size > 5 * 1024 * 1024) { setFormError('封面圖片超過 5 MB，請縮小圖片後重新選擇。'); return }
+    setPendingCoverFile(file)
+    setFormError(`已選擇「${file.name}」。按「儲存」後會上傳一次，之後其他曲目可從雲端封面庫重複使用。`)
+  }
+
+  async function uploadSharedCover(file: File): Promise<SharedCover> {
+    const id = createId()
+    const response = await fetch(`/api/covers?id=${encodeURIComponent(id)}&name=${encodeURIComponent(file.name)}`, {
+      method:'POST', credentials:'same-origin', headers:{ 'Content-Type':file.type || 'application/octet-stream' }, body:file,
+    })
+    const payload = await response.json().catch(() => ({})) as { error?:string; cover?:SharedCover }
+    if (!response.ok || !payload.cover?.url) throw new Error(payload.error || `上傳封面圖片失敗（HTTP ${response.status}）。`)
+    return payload.cover
+  }
+
+  async function openSharedCoverPicker() {
+    setCoverPickerOpen(true)
+    setCoverLibraryLoading(true)
+    setCoverLibraryError('')
+    try {
+      const response = await fetch('/api/covers', { credentials:'same-origin', cache:'no-store' })
+      const payload = await response.json().catch(() => ({})) as { error?:string; covers?:SharedCover[] }
+      if (!response.ok) throw new Error(payload.error || `讀取雲端封面庫失敗（HTTP ${response.status}）。`)
+      setSharedCovers(Array.isArray(payload.covers) ? payload.covers : [])
+    } catch (error) {
+      setCoverLibraryError(error instanceof Error ? error.message : '讀取雲端封面庫失敗。')
+    } finally {
+      setCoverLibraryLoading(false)
+    }
+  }
+
+  function chooseSharedCover(cover: SharedCover) {
+    setPendingCoverFile(null)
+    setDraft(current => ({ ...current, coverUrl:cover.url }))
+    setCoverPickerOpen(false)
+    setFormError(`已選用雲端封面「${cover.fileName}」。儲存後會套用到這首曲譜；同一張封面可供多首曲譜共用。`)
+  }
+
   async function saveDraft() {
     const title = draft.title.trim()
     const artist = (draft.artist ?? '').trim()
-    const coverUrl = (draft.coverUrl ?? '').trim()
+    let coverUrl = (draft.coverUrl ?? '').trim()
     const keySignature = (draft.keySignature ?? '').trim()
     const timeSignature = (draft.timeSignature ?? '').trim()
     const tempoBpm = (draft.tempoBpm ?? '').trim()
@@ -945,6 +996,11 @@ export default function ScoreLibrary() {
         const file = pendingAssetFiles[kind]
         if (file) nextAssets[kind] = await uploadScoreAsset(scoreId, kind, file)
       }
+      if (pendingCoverFile) {
+        const uploadedCover = await uploadSharedCover(pendingCoverFile)
+        coverUrl = uploadedCover.url
+        setSharedCovers(current => [uploadedCover, ...current.filter(item => item.id !== uploadedCover.id)])
+      }
       const nextAssetMap: ScoreAssetsMap = { ...scoreAssetsMap, [scoreId]:nextAssets }
       const assetFields = assetFieldsFromMap(scoreId, nextAssetMap)
       // Keep an existing URL if an asset was linked by URL rather than uploaded through this form.
@@ -964,6 +1020,7 @@ export default function ScoreLibrary() {
       setScoreAssetsMap(nextAssetMap)
       setScores(current => editingId ? current.map(score => score.id === scoreId ? created : score) : [...current, created])
       setPendingAssetFiles({})
+      setPendingCoverFile(null)
       setEditorOpen(false)
       setFormError('')
       setLibraryOperationMessage(`已儲存「${title}」的完整四件套（MusicXML、PDF、MP3、MIDI）。`)
@@ -1282,6 +1339,7 @@ export default function ScoreLibrary() {
         <input ref={pdfFileInputRef} type="file" accept={ASSET_KIND_CONFIG.pdf.accept} hidden onChange={(event) => { void handleAssetFile('pdf', event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
         <input ref={mp3FileInputRef} type="file" accept={ASSET_KIND_CONFIG.mp3.accept} hidden onChange={(event) => { void handleAssetFile('mp3', event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
         <input ref={midiFileInputRef} type="file" accept={ASSET_KIND_CONFIG.midi.accept} hidden onChange={(event) => { void handleAssetFile('midi', event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
+        <input ref={coverImageInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" hidden onChange={(event) => { handleCoverImageFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
 
         <div className="score-library-layout">
           <aside className="score-library-panel">
@@ -1372,10 +1430,12 @@ export default function ScoreLibrary() {
                     }}
                   >
                     <div className="score-library-cover" aria-hidden="true">
-                      <div className={`score-library-cover-art ${score.type !== 'piano' ? 'score-library-cover-art-guitar' : ''}`}>
-                        <span className="score-library-cover-glyph">{score.type === 'piano' ? '𝄞' : '♪'}</span>
-                        <span className="score-library-cover-label">{score.type === 'piano' ? 'PIANO SCORE' : score.type === 'guitar-vocal' ? 'GUITAR VOCAL' : 'FINGERSTYLE'}</span>
-                      </div>
+                      {!score.coverUrl?.trim() && (
+                        <div className={`score-library-cover-art ${score.type !== 'piano' ? 'score-library-cover-art-guitar' : ''}`}>
+                          <span className="score-library-cover-glyph">{score.type === 'piano' ? '𝄞' : '♪'}</span>
+                          <span className="score-library-cover-label">{score.type === 'piano' ? 'PIANO SCORE' : score.type === 'guitar-vocal' ? 'GUITAR VOCAL' : 'FINGERSTYLE'}</span>
+                        </div>
+                      )}
                       {score.coverUrl?.trim() && (
                         <img
                           className="score-library-cover-img"
@@ -1492,8 +1552,14 @@ export default function ScoreLibrary() {
             </div>
             <div className="score-library-field">
               <label htmlFor="score-cover-url">封面圖片路徑 / URL（選填）</label>
-              <input id="score-cover-url" className="score-library-input" value={draft.coverUrl ?? ''} onChange={(event) => setDraft((current) => ({ ...current, coverUrl: event.target.value }))} placeholder="例如：/covers/小幸運.jpg 或圖片網址" />
-              <span className="score-library-path-hint">留白時會使用內建的深色音樂封面。封面可填入圖片 URL；若希望圖片也完全存放於自己的雲端，後續整合時再遷移至 R2。建議使用正方形圖片。</span>
+              <input id="score-cover-url" className="score-library-input" value={draft.coverUrl ?? ''} onChange={(event) => { setPendingCoverFile(null); setDraft((current) => ({ ...current, coverUrl: event.target.value })) }} placeholder="可填入現有圖片網址，或使用下方雲端封面" />
+              <div className="score-library-file-row" style={{ flexWrap:'wrap' }}>
+                <button type="button" className="score-library-button" disabled={libraryBusy} onClick={() => coverImageInputRef.current?.click()}>{pendingCoverFile ? '更換本機封面' : '從電腦上傳新封面'}</button>
+                <button type="button" className="score-library-button" disabled={libraryBusy} onClick={() => { void openSharedCoverPicker() }}>從雲端封面庫選擇</button>
+                {pendingCoverFile && <span className="score-library-path-hint" style={{ alignSelf:'center', overflowWrap:'anywhere' }}>待上傳：{pendingCoverFile.name}</span>}
+                {pendingCoverFile && <button type="button" className="score-library-edit" onClick={() => setPendingCoverFile(null)}>取消選擇</button>}
+              </div>
+              <span className="score-library-path-hint">可繼續填入現有圖片 URL。從電腦上傳 JPG、PNG、WebP 或 GIF（上限 5 MB）後，會保存到共用的 Cloudflare R2 封面庫；同一張封面只需上傳一次，其他曲譜可直接從封面庫選用。建議使用正方形圖片。</span>
             </div>
             <div className="score-library-field">
               <label>MusicXML 檔案（必填）</label>
@@ -1546,6 +1612,28 @@ export default function ScoreLibrary() {
             <div className="score-library-modal-actions">
               <button type="button" className="score-library-button" onClick={() => setEditorOpen(false)}>取消</button>
               <button type="button" className="score-library-button score-library-button-primary" disabled={libraryBusy} onClick={() => { void saveDraft() }}>{libraryBusy ? '正在儲存…' : '儲存'}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {coverPickerOpen && (
+        <div className="score-library-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCoverPickerOpen(false) }}>
+          <section className="score-library-modal" style={{ width:'min(900px, calc(100vw - 36px))', maxWidth:'900px' }} role="dialog" aria-modal="true" aria-labelledby="shared-cover-picker-title">
+            <h2 id="shared-cover-picker-title">雲端封面庫</h2>
+            <p>選擇一張已上傳的封面，就能讓多首曲譜共用同一份雲端圖片。共用封面不會因為刪除其中一首曲譜而被刪除。</p>
+            {coverLibraryLoading ? <div className="score-library-empty">正在讀取雲端封面…</div> : coverLibraryError ? <div className="score-library-error">{coverLibraryError}</div> : sharedCovers.length === 0 ? <div className="score-library-empty">雲端封面庫目前是空的。先選擇「從電腦上傳新封面」並儲存曲譜，之後便能在這裡重複使用。</div> : (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(125px, 1fr))', gap:12, margin:'16px 0', maxHeight:'min(55vh, 500px)', overflowY:'auto', padding:2 }}>
+                {sharedCovers.map(cover => <button key={cover.id} type="button" className="score-library-button" style={{ display:'grid', gridTemplateRows:'auto auto auto', gap:7, padding:9, textAlign:'left', whiteSpace:'normal', minWidth:0 }} onClick={() => chooseSharedCover(cover)} title={`使用封面：${cover.fileName}`}>
+                  <img src={cover.url} alt="" loading="lazy" style={{ width:'100%', aspectRatio:'1 / 1', objectFit:'cover', borderRadius:7, border:'1px solid var(--sl-line)' }} />
+                  <span style={{ fontSize:11, lineHeight:1.5, overflowWrap:'anywhere' }}>{cover.fileName}</span>
+                  <span className="score-library-path-hint">{Math.max(1, Math.round(cover.sizeBytes / 1024))} KB · 選取共用</span>
+                </button>)}
+              </div>
+            )}
+            <div className="score-library-modal-actions">
+              <button type="button" className="score-library-button" onClick={() => setCoverPickerOpen(false)}>返回曲譜編輯</button>
+              <button type="button" className="score-library-button score-library-button-primary" onClick={() => { setCoverPickerOpen(false); coverImageInputRef.current?.click() }}>上傳新封面</button>
             </div>
           </section>
         </div>
