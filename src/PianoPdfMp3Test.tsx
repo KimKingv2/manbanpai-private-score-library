@@ -108,6 +108,8 @@ type MeasureInfo = {
   printedNumber: string
   startsSystem: boolean
   durationQuarter: number
+  /** MusicXML measure@width, used to fit non-uniform measure spans to PDF barlines. */
+  layoutWidth: number
   tempo: number
   meter: string
   durationSeconds: number
@@ -491,11 +493,13 @@ function parseMusicXml(xmlText: string): ParsedScore {
   const measures: MeasureInfo[] = xmlMeasures.map((primaryMeasure, index) => {
     let durationQuarter = 0
     const merged = new Map<string, { pitches: Set<number>; matchPitches: Set<number>; layoutXs: number[] }>()
-    let measureLayoutWidth = Number(primaryMeasure.getAttribute('width'))
-    if (!Number.isFinite(measureLayoutWidth) || measureLayoutWidth <= 0) measureLayoutWidth = 0
+    const declaredMeasureWidths: number[] = []
+    let inferredMeasureWidth = 0
     for (let partIndex = 0; partIndex < parts.length; partIndex++) {
       const partMeasure = directChildren(parts[partIndex], 'measure')[index]
       if (!partMeasure) continue
+      const partMeasureWidth = Number(partMeasure.getAttribute('width'))
+      if (Number.isFinite(partMeasureWidth) && partMeasureWidth > 0) declaredMeasureWidths.push(partMeasureWidth)
       for (const attributes of directChildren(partMeasure, 'attributes')) {
         const value = Number(textOf(firstChild(attributes, 'divisions')))
         if (Number.isFinite(value) && value > 0) divisionsByPart[partIndex] = value
@@ -514,11 +518,22 @@ function parseMusicXml(xmlText: string): ParsedScore {
         event.pitches.forEach(pitch => group.pitches.add(pitch))
         event.matchPitches.forEach(pitch => group.matchPitches.add(pitch))
         if (event.layoutX !== null && Number.isFinite(event.layoutX)) group.layoutXs.push(event.layoutX)
-        if (event.layoutX !== null && Number.isFinite(event.layoutX)) measureLayoutWidth = Math.max(measureLayoutWidth, event.layoutX + 24)
+        if (event.layoutX !== null && Number.isFinite(event.layoutX)) inferredMeasureWidth = Math.max(inferredMeasureWidth, event.layoutX + 24)
         merged.set(key, group)
       }
     }
-    if (!(measureLayoutWidth > 0)) measureLayoutWidth = Math.max(1, durationQuarter * 60)
+    const sortedDeclaredWidths = [...declaredMeasureWidths].sort((a, b) => a - b)
+    const declaredMeasureWidth = sortedDeclaredWidths.length
+      ? sortedDeclaredWidths[Math.floor(sortedDeclaredWidths.length / 2)]
+      : 0
+    // MusicXML measure@width is authoritative. Do not enlarge it from the last note's
+    // default-x: doing so changes the normalized X position only in measures whose final
+    // note sits near the right barline (the source of measure-specific cursor drift).
+    const measureLayoutWidth = declaredMeasureWidth > 0
+      ? declaredMeasureWidth
+      : inferredMeasureWidth > 0
+        ? inferredMeasureWidth
+        : Math.max(1, durationQuarter * 60)
     const startsSystem = index === 0 || directChildren(primaryMeasure, 'print').some(print =>
       print.getAttribute('new-system') === 'yes' || print.getAttribute('new-page') === 'yes')
     // For a system-start measure, MusicXML default-x includes the left indentation for
@@ -560,6 +575,7 @@ function parseMusicXml(xmlText: string): ParsedScore {
       printedNumber: primaryMeasure.getAttribute('number') || String(index + 1),
       startsSystem,
       durationQuarter,
+      layoutWidth: declaredMeasureWidth,
       tempo,
       meter: `${meterByPart[0].beats}/${meterByPart[0].beatType}`,
       durationSeconds: durationQuarter * 60 / Math.max(1, tempo),
@@ -1893,6 +1909,7 @@ export default function PianoPdfMp3Test({ isAdmin = false, pdfUrl = PDF_URL, xml
                           fileUrl={pdfUrl}
                           measureCount={parsed.measures.length}
                           measureNumbers={parsed.measures.map(measure => measure.printedNumber)}
+                          measureLayoutWidths={parsed.measures.map(measure => measure.layoutWidth)}
                           systemStartIndices={parsed.measures.filter(measure => measure.startsSystem).map(measure => measure.index)}
                           cursorMeasureIndex={cursor.measureIndex}
                           cursorProgress={cursor.progress}
