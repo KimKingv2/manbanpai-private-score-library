@@ -534,8 +534,17 @@ function parseMusicXml(xmlText: string): ParsedScore {
       : inferredMeasureWidth > 0
         ? inferredMeasureWidth
         : Math.max(1, durationQuarter * 60)
-    const startsSystem = index === 0 || directChildren(primaryMeasure, 'print').some(print =>
-      print.getAttribute('new-system') === 'yes' || print.getAttribute('new-page') === 'yes')
+    // MuseScore may emit a system/page break on a non-primary part in partwise
+    // MusicXML (for example, the lower piano staff). Notes and widths are already merged
+    // from every part above, so layout breaks must be collected from every matching measure
+    // as well. Reading only primaryMeasure silently drops those breaks and can make an
+    // entire later PDF system, such as the row beginning at measure 21, disappear from the
+    // playback-to-PDF mapping.
+    const startsSystem = index === 0 || parts.some(part => {
+      const partMeasure = directChildren(part, 'measure')[index]
+      return Boolean(partMeasure && directChildren(partMeasure, 'print').some(print =>
+        print.getAttribute('new-system') === 'yes' || print.getAttribute('new-page') === 'yes'))
+    })
     // For a system-start measure, MusicXML default-x includes the left indentation for
     // clef/key/time signatures (often around 87 pt rather than 12.5 pt). The corresponding
     // PDF first-measure box begins at the visual system/staff left edge, before that indentation,
