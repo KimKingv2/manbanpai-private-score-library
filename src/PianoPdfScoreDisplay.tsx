@@ -1127,9 +1127,24 @@ export default function PianoPdfScoreDisplay({
         // markers and the printed system-start numbers are the authoritative layout map.
         // Every system gets a non-overlapping interval [start, nextStart). No interpolation
         // is permitted between unrelated rows, and pickup measure "0" remains array index 0.
+        // A matching row count is not proof that raster systems are in the same order as
+        // MusicXML system breaks. A missed staff pair plus a false-positive row can keep the
+        // counts equal while shifting every later measure to the wrong PDF line. Verify each
+        // detected row against the printed start-measure number before trusting positional
+        // XML-to-PDF assignment. The first system may legitimately have no printed number
+        // (pickup/opening system); every later system must provide its expected anchor.
+        const exactLayoutLabelsMatch = systemRecords.length === xmlSystemStarts.length &&
+          systemRecords.every((record, index) => {
+            const expectedNumber = normalizeMeasureNumberLabel(
+              measureNumbers[xmlSystemStarts[index]] ?? String(xmlSystemStarts[index] + 1),
+            )
+            if (record.printedStartNumber === null) return index === 0
+            return normalizeMeasureNumberLabel(record.printedStartNumber) === expectedNumber
+          })
         const exactLayoutAvailable = hasXmlSystemLayout &&
           systemRecords.length === xmlSystemStarts.length &&
-          pageLabelRows.flat().length === xmlSystemStarts.length - 1
+          pageLabelRows.flat().length === xmlSystemStarts.length - 1 &&
+          exactLayoutLabelsMatch
 
         if (exactLayoutAvailable) {
           for (let index = 0; index < systemRecords.length; index++) {
