@@ -530,7 +530,7 @@ async function detectPianoSystems(
       }
       // Find the actual upper and lower five-line staves for each labelled system separately.
       // This avoids inheriting a bad global staff pairing on rows whose notation is unusually dense.
-      const findLabelledStaffPair = (labelTop: number, opening = false): { yTop: number; yBottom: number } | undefined => {
+      const findLabelledStaffPair = (labelTop: number, opening = false): { upper: RasterStaff; lower: RasterStaff; yTop: number; yBottom: number } | undefined => {
         const expectedUpperTop = labelTop + (opening ? 16 : 13)
         const upperCandidates = staffs
           .map((staff, index) => ({ staff, index, distance: Math.abs(staff.top - expectedUpperTop) }))
@@ -563,8 +563,12 @@ async function detectPianoSystems(
           const span = lower.bottom - upper.top
           if (!Number.isFinite(span) || span < 45 || span > 115) continue
 
-          // Both bounds use the real outer staff lines and the same 8 pt padding.
+          // Keep the exact upper/lower staff pair as well as its vertical extent.
+          // The same pair must drive horizontal barline detection; a page-global pairing
+          // can associate a dense row with a neighbouring system and shift its measure boxes.
           return {
+            upper,
+            lower,
             yTop: Math.max(0, upper.top - 8),
             yBottom: Math.min(pageHeight, lower.bottom + 8),
           }
@@ -589,23 +593,31 @@ async function detectPianoSystems(
       const fallbackBottomOffset = median(labelledGeometryOffsets.map(item => item.bottom), 84)
       const claimedStaffGeometry = new Set<number>()
       const makeLabelledSystem = (labelTop: number, opening = false): RasterSystem => {
+        // Resolve the actual upper/lower five-line pair relative to this printed system label.
+        // Do this before consulting page-global pairs: unusual notation can cause the global
+        // detector to attach one row to a neighbouring system even when the label is clear.
+        const localStaffPair = findLabelledStaffPair(labelTop, opening)
         const nominalLeft = opening ? Math.min(pageWidth - 100, 62) : Math.min(pageWidth - 100, 36.7)
         const nominalRight = Math.max(nominalLeft + 120, pageWidth - 42.3)
-        const targetSystemY = labelTop + (opening ? 8 : 5)
+        const targetSystemY = localStaffPair?.yTop ?? labelTop + (opening ? 8 : 5)
         const geometryMatch = systems
           .map((system, index) => ({ system, index, distance: Math.abs(system.yTop - targetSystemY) }))
-          .filter(item => !claimedStaffGeometry.has(item.index) && item.distance <= 36)
+          .filter(item => !claimedStaffGeometry.has(item.index) && item.distance <= (localStaffPair ? 12 : 24))
           .sort((a, b) => a.distance - b.distance)[0]
         const verticalGeometryMatch = geometryMatch && isPlausibleSystemGeometry(geometryMatch.system)
           ? geometryMatch
           : undefined
-        if (geometryMatch) claimedStaffGeometry.add(geometryMatch.index)
-        const staffLeft = geometryMatch?.system.xStart ?? nominalLeft
-        const staffRight = geometryMatch?.system.xEnd ?? nominalRight
-        // The opening system uses a taller title/tempo block; subsequent systems have
-        // the printed measure number immediately above the staff. These are fallback bands;
-        // matching detected system geometry still supplies the horizontal staff extents.
-        const upper: RasterStaff = {
+        if (verticalGeometryMatch) claimedStaffGeometry.add(verticalGeometryMatch.index)
+        // When a local staff pair is available, its own measured horizontal extent is
+        // authoritative. Never borrow x coordinates from a merely nearby global pairing.
+        const staffLeft = localStaffPair
+          ? Math.min(localStaffPair.upper.left, localStaffPair.lower.left)
+          : verticalGeometryMatch?.system.xStart ?? nominalLeft
+        const staffRight = localStaffPair
+          ? Math.max(localStaffPair.upper.right, localStaffPair.lower.right)
+          : verticalGeometryMatch?.system.xEnd ?? nominalRight
+        // Label-relative bands are only a fallback when staff-line detection misses this row.
+        const upper: RasterStaff = localStaffPair?.upper ?? {
           lineYs: [],
           top: labelTop + (opening ? 16 : 13),
           bottom: labelTop + (opening ? 36 : 35),
@@ -613,7 +625,7 @@ async function detectPianoSystems(
           right: staffRight,
           coverage: 1,
         }
-        const lower: RasterStaff = {
+        const lower: RasterStaff = localStaffPair?.lower ?? {
           lineYs: [],
           top: labelTop + (opening ? 57 : 56),
           bottom: labelTop + (opening ? 77 : 76),
@@ -621,11 +633,13 @@ async function detectPianoSystems(
           right: staffRight,
           coverage: 1,
         }
-        // Prefer full-height barlines detected from the matching grand-staff system.
-        // Estimated label-relative bands can mistake note stems for barlines and shift measures.
-        const bars = geometryMatch
-          ? geometryMatch.system.barXs
-          : detectSystemBarXs(image.data, canvas.width, canvas.height, rasterScale, upper, lower)
+        // Detect barlines from the same local upper/lower staff pair used for this row.
+        // This prevents a false page-global pairing from moving the 18th/21st-measure boxes.
+        const bars = localStaffPair
+          ? detectSystemBarXs(image.data, canvas.width, canvas.height, rasterScale, localStaffPair.upper, localStaffPair.lower)
+          : verticalGeometryMatch
+            ? verticalGeometryMatch.system.barXs
+            : detectSystemBarXs(image.data, canvas.width, canvas.height, rasterScale, upper, lower)
         // The left boundary of a system's first measure is different from an internal
         // measure boundary: after a line break, the first measure begins at the system's
         // left edge, so estimating it at +8.7% of the page clips the measure's left side.
@@ -652,9 +666,8 @@ async function detectPianoSystems(
         for (const x of boundaries) {
           if (!clean.length || x - clean[clean.length - 1] >= 8) clean.push(x)
         }
-        // Use the real grand-staff extent when this label row matches a detected system.
-        // Keep label-relative estimates only as a fallback for unmatched systems.
-        const localStaffPair = findLabelledStaffPair(labelTop, opening)
+        // Use the local pair's real extent. Global geometry is only a fallback when the
+        // local detector cannot confidently identify both staves for this labelled row.
         const yTop = localStaffPair?.yTop ?? verticalGeometryMatch?.system.yTop ?? Math.max(0, labelTop + fallbackTopOffset)
         const yBottom = localStaffPair?.yBottom ?? verticalGeometryMatch?.system.yBottom ?? Math.min(pageHeight, labelTop + fallbackBottomOffset)
         const boxes: MeasureBox[] = []
