@@ -21,6 +21,8 @@ type Props = {
   measureCount: number
   /** MusicXML measure number attributes in written order, used to anchor PDF geometry. */
   measureNumbers?: string[]
+  /** Authoritative MusicXML measure widths, in tenths, for non-uniform PDF boundary fitting. */
+  measureLayoutWidths?: number[]
   /** Exact measure-array indices where MusicXML requests a new system or page. */
   systemStartIndices?: number[]
   cursorMeasureIndex: number
@@ -943,6 +945,7 @@ export default function PianoPdfScoreDisplay({
   fileUrl,
   measureCount,
   measureNumbers = [],
+  measureLayoutWidths = [],
   systemStartIndices = [],
   cursorMeasureIndex,
   cursorProgress,
@@ -1227,11 +1230,25 @@ export default function PianoPdfScoreDisplay({
         // If line detection returned too many candidates, a small dynamic program picks the
         // subset whose widths are most consistent with this system. If too few exist, use a
         // per-system even-width fallback rather than stealing measures from the next system.
-        const fitSystemBoundaries = (system: RasterSystem, count: number): number[] => {
+        const fitSystemBoundaries = (system: RasterSystem, count: number, rawMeasureWidths: number[]): number[] => {
           const left = system.xStart
           const right = system.xEnd
-          if (count <= 0 || right <= left) return []
+          const systemWidth = right - left
+          if (count <= 0 || systemWidth <= 0) return []
           if (count === 1) return [left, right]
+
+          // MuseScore does not make every measure the same width. Use each measure's
+          // exported MusicXML width as the target, scaled to the detected PDF system span.
+          // If one measure omits width, fill it with the median declared width for this row.
+          const validWidths = rawMeasureWidths.filter(value => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
+          const fallbackWidth = validWidths.length ? validWidths[Math.floor(validWidths.length / 2)] : 1
+          const weights = Array.from({ length: count }, (_, index) => {
+            const value = Number(rawMeasureWidths[index])
+            return Number.isFinite(value) && value > 0 ? value : fallbackWidth
+          })
+          const weightTotal = weights.reduce((sum, value) => sum + value, 0)
+          const expectedWidths = weights.map(value => systemWidth * value / Math.max(1, weightTotal))
+
           const candidates = [left]
           const innerCandidates = system.barXs
             .filter(x => x > left + 7 && x < right - 7)
@@ -1242,31 +1259,68 @@ export default function PianoPdfScoreDisplay({
           // Preserve both endpoints even when a detected barline sits very close to the edge.
           candidates.push(right)
           if (candidates.length === count + 1) return candidates
+
           if (candidates.length < count + 1) {
-            // Preserve every confidently detected barline. Insert evenly spaced estimated
-            // boundaries only inside a gap that has too few detected lines, rather than
-            // replacing the entire system with equal-width measures.
-            const slots = Array(Math.max(0, candidates.length - 1)).fill(1) as number[]
-            let missing = count - slots.length
-            while (missing > 0 && slots.length > 0) {
-              let bestGap = 0
-              let bestWidth = -1
-              for (let gap = 0; gap < slots.length; gap++) {
-                const width = (candidates[gap + 1] - candidates[gap]) / slots[gap]
-                if (width > bestWidth) { bestWidth = width; bestGap = gap }
+            // Some engraved barlines may be too short or interrupted to pass raster detection.
+            // Keep the confident boundaries, then allocate the missing measures to each gap
+            // using the exported widths of those measures instead of splitting gaps evenly.
+            const gapCount = candidates.length - 1
+            const dp: number[][] = Array.from({ length: gapCount + 1 }, () => Array(count + 1).fill(Number.POSITIVE_INFINITY))
+            const previous: number[][] = Array.from({ length: gapCount + 1 }, () => Array(count + 1).fill(-1))
+            dp[0][0] = 0
+            for (let gap = 1; gap <= gapCount; gap++) {
+              const actualWidth = candidates[gap] - candidates[gap - 1]
+              for (let endMeasure = gap; endMeasure <= count; endMeasure++) {
+                for (let startMeasure = gap - 1; startMeasure < endMeasure; startMeasure++) {
+                  if (!Number.isFinite(dp[gap - 1][startMeasure])) continue
+                  const expectedWidth = expectedWidths.slice(startMeasure, endMeasure).reduce((sum, value) => sum + value, 0)
+                  const ratio = actualWidth / Math.max(1, expectedWidth)
+                  let cost = Math.log(ratio) ** 2
+                  if (ratio < 0.45) cost += 1
+                  if (ratio > 2.2) cost += 1
+                  const proposed = dp[gap - 1][startMeasure] + cost
+                  if (proposed < dp[gap][endMeasure]) {
+                    dp[gap][endMeasure] = proposed
+                    previous[gap][endMeasure] = startMeasure
+                  }
+                }
               }
-              slots[bestGap]++
-              missing--
             }
-            const repaired = [left]
-            for (let gap = 0; gap < slots.length; gap++) {
-              const a = candidates[gap]
-              const b = candidates[gap + 1]
-              for (let part = 1; part <= slots[gap]; part++) repaired.push(a + (b - a) * part / slots[gap])
+
+            if (Number.isFinite(dp[gapCount][count])) {
+              const measuresPerGap = Array(gapCount).fill(0)
+              let measureCursor = count
+              for (let gap = gapCount; gap >= 1; gap--) {
+                const previousMeasure = previous[gap][measureCursor]
+                if (previousMeasure < 0) break
+                measuresPerGap[gap - 1] = measureCursor - previousMeasure
+                measureCursor = previousMeasure
+              }
+              const repaired = [left]
+              let measureOffset = 0
+              for (let gap = 0; gap < gapCount; gap++) {
+                const a = candidates[gap]
+                const b = candidates[gap + 1]
+                const groupWidths = expectedWidths.slice(measureOffset, measureOffset + measuresPerGap[gap])
+                const groupTotal = groupWidths.reduce((sum, value) => sum + value, 0)
+                let cumulative = 0
+                for (const measureWidth of groupWidths) {
+                  cumulative += measureWidth
+                  repaired.push(a + (b - a) * cumulative / Math.max(1, groupTotal))
+                }
+                measureOffset += measuresPerGap[gap]
+              }
+              if (repaired.length === count + 1) return repaired
             }
-            return repaired.slice(0, count + 1)
+            // Defensive fallback if confidence gaps cannot be partitioned into all measures.
+            return Array.from({ length: count + 1 }, (_, index) => {
+              const cumulative = expectedWidths.slice(0, index).reduce((sum, value) => sum + value, 0)
+              return left + cumulative
+            })
           }
-          const average = (right - left) / count
+
+          // Too many vertical-line candidates: select one boundary per true bar using the
+          // expected width of that specific measure, not a single system-wide average.
           const n = candidates.length
           const dp: number[][] = Array.from({ length: count + 1 }, () => Array(n).fill(Number.POSITIVE_INFINITY))
           const previous: number[][] = Array.from({ length: count + 1 }, () => Array(n).fill(-1))
@@ -1279,10 +1333,10 @@ export default function PianoPdfScoreDisplay({
                 if (!Number.isFinite(dp[segments - 1][i])) continue
                 const width = candidates[j] - candidates[i]
                 if (width < 10) continue
-                const ratio = width / Math.max(1, average)
+                const ratio = width / Math.max(1, expectedWidths[segments - 1])
                 let cost = Math.log(ratio) ** 2
-                if (ratio < 0.48) cost += 1.5
-                if (ratio > 2.1) cost += 1.0
+                if (ratio < 0.45) cost += 1
+                if (ratio > 2.2) cost += 1
                 const proposed = dp[segments - 1][i] + cost
                 if (proposed < dp[segments][j]) {
                   dp[segments][j] = proposed
@@ -1292,7 +1346,13 @@ export default function PianoPdfScoreDisplay({
             }
           }
           if (!Number.isFinite(dp[count][n - 1])) {
-            return Array.from({ length: count + 1 }, (_, index) => left + (right - left) * index / count)
+            const repaired = [left]
+            let cumulative = 0
+            for (const width of expectedWidths) {
+              cumulative += width
+              repaired.push(left + cumulative)
+            }
+            return repaired
           }
           const selected = Array(count + 1).fill(0)
           let cursor = n - 1
@@ -1321,7 +1381,11 @@ export default function PianoPdfScoreDisplay({
             record.repaired = record.rawGeometryCount !== count || availableInnerCandidates !== count - 1
           }
           if (count <= 0) continue
-          const boundaries = fitSystemBoundaries(record.system, count)
+          const boundaries = fitSystemBoundaries(
+            record.system,
+            count,
+            measureLayoutWidths.slice(record.startIndex, record.startIndex + count),
+          )
           const list = builtBoxesByPage.get(record.pageIndex) ?? []
           for (let offset = 0; offset < count; offset++) {
             const xStart = boundaries[offset]
@@ -1389,7 +1453,7 @@ export default function PianoPdfScoreDisplay({
       cancelled = true
       try { void loadingTask?.destroy?.() } catch { /* ignore teardown races */ }
     }
-  }, [fileUrl, measureCount, measureNumbers.join('|'), systemStartIndices.join('|')])
+  }, [fileUrl, measureCount, measureNumbers.join('|'), measureLayoutWidths.join('|'), systemStartIndices.join('|')])
 
   useEffect(() => {
     if (!autoFollow || loading || cursorMeasureIndex < 0 || typeof window === 'undefined') return
