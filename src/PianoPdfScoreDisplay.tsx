@@ -149,6 +149,13 @@ function resolveCursorX(
 
 function labelLooksLikeMeasureRow(labels: MeasureLabel[]) {
   if (!labels.length) return false
+  // MuseScore can place tuplet digits (for example a "3" above a triplet) on the
+  // same text baseline as the system-start measure number. Those digits may be far
+  // to the right of the true left-margin label and make the whole row appear to run
+  // backwards (for example "21, 3"). A unique left-margin number is the system label;
+  // ignore unrelated notation digits when deciding whether this is a measure row.
+  const leftMarginLabels = labels.filter(label => label.x < 170)
+  if (leftMarginLabels.length === 1) return true
   if (labels.length === 1) return labels[0].x < 170
   let increasingPairs = 0
   let distinctPairs = 0
