@@ -1273,7 +1273,43 @@ export default function PianoPdfScoreDisplay({
           }
           // Preserve both endpoints even when a detected barline sits very close to the edge.
           candidates.push(right)
-          if (candidates.length === count + 1) return candidates
+
+          // A matching candidate count does NOT prove that the detected lines are the real
+          // barlines. The raster detector can miss one true barline and mistake a note stem
+          // for another, leaving exactly count+1 candidates while individual measure spans
+          // are wrong. This is especially visible on dense/non-uniform systems (for example
+          // the rows containing measures 18 and 21). When MusicXML supplied authoritative
+          // widths, validate every detected interval against those widths before accepting
+          // the raster positions. If the geometry fails that check, use the MusicXML-proportional
+          // boundaries for this row instead of silently accepting a wrong set of lines.
+          const buildExpectedBoundaries = () => {
+            const expected = [left]
+            let cumulative = 0
+            for (const width of expectedWidths) {
+              cumulative += width
+              expected.push(left + cumulative)
+            }
+            expected[expected.length - 1] = right
+            return expected
+          }
+          if (candidates.length === count + 1) {
+            const hasAuthoritativeWidths = rawMeasureWidths.filter(value =>
+              Number.isFinite(value) && value > 0,
+            ).length >= Math.ceil(count * 0.75)
+            if (!hasAuthoritativeWidths) return candidates
+
+            const logWidthErrors = expectedWidths.map((expected, index) => {
+              const actual = candidates[index + 1] - candidates[index]
+              return Math.abs(Math.log(Math.max(1, actual) / Math.max(1, expected)))
+            })
+            const maximumLogError = Math.max(0, ...logWidthErrors)
+            const medianLogError = median(logWidthErrors, 0)
+            const rasterGeometryIsTrustworthy =
+              maximumLogError <= Math.log(1.28) &&
+              medianLogError <= Math.log(1.12)
+
+            return rasterGeometryIsTrustworthy ? candidates : buildExpectedBoundaries()
+          }
 
           if (candidates.length < count + 1) {
             // Some engraved barlines may be too short or interrupted to pass raster detection.
